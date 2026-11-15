@@ -1,0 +1,12 @@
+(cas_public) {
+	@public_cas path / /health /cas /cas/ /cas/login /cas/login.css /cas/logout
+	handle @public_cas {
+		reverse_proxy 127.0.0.1:8193 {
+			header_up X-CAS-Site-Origin {args[0]}
+			header_up X-CAS-Client-IP {args[1]}
+		}
+	}
+	handle {
+		respond 404
+	}
+}

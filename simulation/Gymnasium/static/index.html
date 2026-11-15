@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b0e11">
+  <meta name="description" content="钢场健身房场地预约与实时容量管理控制台">
+  <title>钢场 GYMHALL — 场地预约控制台</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <div class="page-grid" aria-hidden="true"></div>
+  <header class="site-header shell">
+    <a class="brand" href="/" aria-label="钢场首页">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span class="brand-copy"><strong>钢场</strong><small>GYMHALL / 01</small></span>
+    </a>
+    <div class="header-meta">
+      <span class="protocol-label">MCP / STREAMABLE HTTP</span>
+      <span class="service-state"><i aria-hidden="true"></i>系统在线</span>
+    </div>
+  </header>
+
+  <main class="shell">
+    <section class="hero" aria-labelledby="page-title">
+      <div class="hero-copy">
+        <div class="eyebrow"><span>FACILITY OPERATIONS</span><span>CN—19001</span></div>
+        <h1 id="page-title">训练席位<br><em>实时调度。</em></h1>
+        <p>每一块训练场地，都值得被精准安排。查询实时余量、锁定用户席位，让下一次训练准时发生。</p>
+        <div class="hero-tags" aria-label="系统特征">
+          <span>实时库存</span><span>并发安全</span><span>共享内存</span>
+        </div>
+      </div>
+      <section class="summary-panel" aria-label="运营概览">
+        <div class="panel-topline"><span>运营概览 / LIVE BOARD</span><span class="live-tag">LIVE</span></div>
+        <div class="summary-primary">
+          <span class="metric-label">当前可用席位</span>
+          <strong id="total-remaining">—</strong>
+          <small>SEATS AVAILABLE</small>
+        </div>
+        <div class="summary-secondary">
+          <div><span>开放场地</span><strong id="total-venues">—</strong><small>个区域</small></div>
+          <div><span>有效预约</span><strong id="total-reservations">—</strong><small>条记录</small></div>
+        </div>
+        <div class="sync-line"><span>数据同步</span><time id="last-synced">等待首次同步</time></div>
+      </section>
+    </section>
+
+    <div class="workspace">
+      <section class="venues-section" aria-labelledby="venues-title">
+        <div class="section-heading">
+          <div><span class="section-index">01 / VENUES</span><h2 id="venues-title">场地状态</h2></div>
+          <button class="button button-ghost" id="refresh-button" type="button">
+            <span class="refresh-symbol" aria-hidden="true">↻</span>刷新数据
+          </button>
+        </div>
+        <div class="venue-grid" id="venue-grid" aria-live="polite" aria-busy="true">
+          <div class="venue-skeleton"></div><div class="venue-skeleton"></div><div class="venue-skeleton"></div>
+        </div>
+      </section>
+
+      <aside class="booking-panel" aria-labelledby="booking-title">
+        <div class="booking-head">
+          <span class="section-index">02 / BOOKING</span>
+          <h2 id="booking-title">预约席位</h2>
+          <p>选定场地与训练者，提交后立即占用一个名额。</p>
+        </div>
+        <form id="reservation-form" novalidate>
+          <label for="venue-select">训练场地</label>
+          <div class="select-wrap">
+            <select id="venue-select" name="venue_id" required disabled>
+              <option value="">正在读取场地…</option>
+            </select>
+          </div>
+          <label for="user-name">训练者姓名</label>
+          <input id="user-name" name="user_name" type="text" maxlength="50" autocomplete="name" placeholder="输入姓名，例如：张敏" required>
+          <p class="field-hint">同一训练者不能重复预约同一场地。</p>
+          <button class="button button-primary submit-button" id="submit-button" type="submit" disabled>
+            <span id="submit-label">确认预约</span><span aria-hidden="true">→</span>
+          </button>
+        </form>
+        <div class="booking-note"><span>预约提示</span><p>取消预约后会释放一个名额。请使用演示称呼，登记的称呼会出现在预约记录中。</p></div>
+      </aside>
+    </div>
+
+    <section class="reservations-section" aria-labelledby="reservations-title">
+      <div class="section-heading">
+        <div><span class="section-index">03 / RESERVATIONS</span><h2 id="reservations-title">预约记录</h2></div>
+        <span class="count-badge" id="reservation-count">0 条进行中</span>
+      </div>
+      <div class="table-shell" tabindex="0" role="region" aria-labelledby="reservations-title">
+        <table>
+          <thead><tr><th>预约编号</th><th>训练者</th><th>训练场地</th><th>预约时间</th><th>取消预约</th></tr></thead>
+          <tbody id="reservation-list"></tbody>
+        </table>
+        <div class="empty-state" id="empty-reservations">
+          <span class="empty-mark" aria-hidden="true">00</span>
+          <div><strong>当前没有进行中的预约</strong><p>从上方选择场地，为第一位训练者保留席位。</p></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer shell">
+    <span>GYMHALL® / 训练资源管理单元</span>
+    <span>MCP ENDPOINT <strong>/mcp</strong></span>
+    <span>内存数据 · 重启后重置</span>
+  </footer>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" aria-hidden="true">
+    <span id="toast-code">READY</span><p id="toast-message"></p>
+  </div>
+</body>
+</html>

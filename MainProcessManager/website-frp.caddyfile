@@ -1,0 +1,26 @@
+{
+	admin off
+	auto_https off
+	servers {
+		trusted_proxies static 127.0.0.1/32
+		trusted_proxies_strict
+	}
+}
+
+import cas-public.caddyfile
+
+http://:{$MPM_FRP_WEBSITE_PORT} {
+	bind 127.0.0.1
+	reverse_proxy 127.0.0.1:{$MPM_FRP_BACKEND_PORT} {
+		header_up X-Forwarded-For {client_ip}
+	}
+}
+
+http://:{$MPM_FRP_CAS_PORT} {
+	bind 127.0.0.1
+	@unexpected_host not host {$MPM_FRP_CAS_HOST}
+	route {
+		respond @unexpected_host 421
+		import cas_public {$MPM_FRP_CAS_ORIGIN} {client_ip}
+	}
+}

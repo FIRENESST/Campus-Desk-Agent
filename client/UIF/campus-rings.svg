@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" role="img" aria-labelledby="logo-title">
+  <title id="logo-title">中传校园助手三环</title>
+  <circle id="campus-ring-outer" cx="50" cy="50" r="40" pathLength="360"
+    fill="none" stroke="#ed2939" stroke-width="10" stroke-linecap="round" stroke-dasharray="288 72" stroke-dashoffset="-36"/>
+  <circle id="campus-ring-middle" cx="50" cy="50" r="26" pathLength="360"
+    fill="none" stroke="#214cf3" stroke-width="10" stroke-linecap="round" stroke-dasharray="280 80" stroke-dashoffset="-220"/>
+  <circle id="campus-ring-inner" cx="50" cy="50" r="12" pathLength="360"
+    fill="none" stroke="#08b643" stroke-width="10" stroke-linecap="round" stroke-dasharray="252 108" stroke-dashoffset="-324"/>
+</svg>

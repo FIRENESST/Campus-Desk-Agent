@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>后台管理 · 中传校园助手</title>
+  <link rel="stylesheet" href="/admin/panel.css">
+  <link rel="stylesheet" href="/auth/password.css">
+  <script type="module" src="/admin/panel.js"></script>
+  <script src="/auth/password.js" defer></script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="/">
+      <img src="/campus.svg" width="40" height="40" alt="">
+      <span>中传校园助手<small>后台管理</small></span>
+    </a>
+    <div class="header-controls">
+      <a href="/privacy" target="_blank" rel="noopener">隐私说明</a>
+      <button id="weread-status" type="button" hidden>微信读书</button>
+      <span id="identity" hidden></span>
+      <button id="logout" type="button" hidden>退出管理</button>
+      <a href="/">返回校园助手</a>
+    </div>
+  </header>
+
+  <main id="sign-in" class="sign-in">
+    <section class="sign-in-intro">
+      <p class="eyebrow">CUC CAMPUS DESK</p>
+      <h1>校园后台<br>管理工作台</h1>
+      <p>在这里查看后台运行情况、管理业务资料和校园服务。</p>
+    </section>
+    <section class="sign-in-card" aria-labelledby="sign-in-title">
+      <h2 id="sign-in-title">在线管理员登录</h2>
+      <p class="muted">请先在校园助手绑定统一身份并登记个人资料，再用已获授权的邮箱和密码登录。</p>
+      <form id="login-form" method="post" action="/admin">
+        <label>邮箱<input name="email" type="email" autocomplete="username" maxlength="320" required></label>
+        <div>
+          <label class="password-label" for="admin-password">密码</label>
+          <div class="password-input" data-password-control>
+            <input id="admin-password" name="password" type="password" autocomplete="current-password" maxlength="128" required>
+            <button type="button" hidden>显示</button>
+          </div>
+        </div>
+        <button type="submit" class="primary">登录管理台</button>
+      </form>
+      <p id="login-feedback" class="feedback" role="status"></p>
+    </section>
+  </main>
+
+  <div id="workspace" class="workspace" hidden>
+    <aside>
+      <p class="eyebrow">管理工作台</p>
+      <label class="section-picker">管理模块<select id="section-picker"></select></label>
+      <nav id="sections" aria-label="后台功能">
+        <button type="button" data-view="processes">运行总览</button>
+        <button type="button" data-view="data">用户与业务数据</button>
+        <button type="button" data-view="campus">校园服务后端</button>
+        <button type="button" data-view="wechat">公众号采集</button>
+        <button type="button" data-view="rumor">校园传闻管理</button>
+        <button type="button" data-view="photos">地点照片审核</button>
+        <button type="button" data-view="rag">RAG 资料库</button>
+        <button type="button" data-view="capabilities">工具调用</button>
+        <button type="button" data-view="routing">路由反馈</button>
+        <button type="button" data-view="cas">校园资料核验</button>
+        <button type="button" data-view="credentials">教师凭据</button>
+        <button type="button" data-view="audit">管理审计</button>
+      </nav>
+    </aside>
+    <main id="admin-content" class="content" aria-labelledby="view-title" tabindex="0">
+      <div class="view-head">
+        <div><h1 id="view-title" tabindex="-1"></h1><p id="view-summary" class="muted"></p></div>
+        <button id="refresh" type="button">刷新</button>
+      </div>
+      <div id="rumor-login-notice" class="collector-notice" hidden>
+        <p id="rumor-login-message" role="status"></p>
+        <button id="rumor-login-details" type="button">查看采集授权</button>
+      </div>
+      <p id="feedback" class="feedback" role="status"></p>
+      <div id="panel"></div>
+    </main>
+  </div>
+
+  <dialog id="editor" aria-labelledby="editor-title">
+    <form id="editor-form">
+      <h2 id="editor-title"></h2>
+      <div id="editor-fields" class="fields"></div>
+      <p id="editor-feedback" class="feedback" role="alert"></p>
+      <div class="actions">
+        <button id="editor-cancel" type="button">取消</button>
+        <button class="primary" type="submit">保存</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="weread-login" aria-labelledby="weread-heading">
+    <h2 id="weread-heading">校园日报 · 微信读书</h2>
+    <p id="weread-feedback" class="feedback" role="status"></p>
+    <img id="weread-qr" width="224" height="224" alt="微信读书登录二维码" hidden>
+    <div class="actions">
+      <form method="dialog"><button>关闭</button></form>
+      <button id="weread-start" type="button" class="primary" hidden>生成二维码</button>
+    </div>
+  </dialog>
+</body>
+</html>

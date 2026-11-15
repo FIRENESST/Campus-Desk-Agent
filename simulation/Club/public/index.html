@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="社团活动查询、报名与取消管理台">
+  <title>社团编辑部 · 活动快报</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script defer src="/app.js"></script>
+</head>
+<body>
+  <div class="topline">CLUB GAZETTE · 社团活动专刊 <span>NO. 018 / 本周新刊</span></div>
+
+  <header class="masthead page-shell">
+    <div class="brand-block">
+      <p class="eyebrow">THE CLUB EDITORIAL</p>
+      <h1>社团编辑部</h1>
+      <p class="brand-subtitle">把志同道合的人，排进同一期生活里。</p>
+    </div>
+    <div class="issue-card" aria-label="本刊口号">
+      <span>本周编辑按</span>
+      <strong>别只收藏生活，<br>来现场认识新朋友。</strong>
+      <small>活动 / 报名 / 名册，一页搞定</small>
+    </div>
+  </header>
+
+  <main class="page-shell">
+    <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+
+    <section class="activities-section" aria-labelledby="activities-title">
+      <div class="section-heading">
+        <div>
+          <p class="section-index">01 / ACTIVITY BOARD</p>
+          <h2 id="activities-title">本周活动排期</h2>
+        </div>
+        <button id="refresh-button" class="button button-quiet" type="button">刷新名册</button>
+      </div>
+      <p class="section-intro">每一场都由社员发起。名额实时更新，报满即止。</p>
+      <div id="activities" class="activity-grid" aria-busy="true">
+        <p class="loading-note">正在装订本周活动…</p>
+      </div>
+    </section>
+
+    <div class="desk-grid">
+      <section class="signup-panel paper-panel" aria-labelledby="signup-title">
+        <p class="section-index">02 / SIGN-UP DESK</p>
+        <h2 id="signup-title">留个名字，占个位置</h2>
+        <p>选择活动并填写演示称呼。提交后，称呼会出现在报名名册中。</p>
+        <form id="registration-form">
+          <label for="activity-select">想参加哪一场？</label>
+          <select id="activity-select" name="activityId" required>
+            <option value="">正在读取活动…</option>
+          </select>
+
+          <label for="participant-name">你的名字</label>
+          <input id="participant-name" name="participantName" type="text" maxlength="40" autocomplete="name" placeholder="例如：阿禾" required>
+
+          <button id="register-button" class="button button-primary" type="submit">确认报名</button>
+        </form>
+        <p class="form-footnote">同一位成员不能重复报名同一场活动。</p>
+      </section>
+
+      <section class="registrations-panel" aria-labelledby="registrations-title">
+        <div class="section-heading compact">
+          <div>
+            <p class="section-index">03 / NAME LIST</p>
+            <h2 id="registrations-title">报名名册</h2>
+          </div>
+          <span id="registration-count" class="count-label">0 条记录</span>
+        </div>
+        <div id="registrations" class="registration-list" aria-live="polite">
+          <p class="loading-note">正在翻开名册…</p>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <footer class="page-shell footer">
+    <span>社团编辑部 · 让每次见面都有下文</span>
+    <span>LIVE VIA GRAPHQL / 127.0.0.1:19002</span>
+  </footer>
+</body>
+</html>

@@ -1,0 +1,89 @@
+:root {
+  color-scheme: light;
+  font: 16px/1.55 system-ui, "Microsoft YaHei", sans-serif;
+  color: #1b2d25;
+  background: #eef2ec;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  min-height: 100vh;
+  min-height: 100svh;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  padding: clamp(16px, 5vw, 64px);
+  background: radial-gradient(ellipse at top right, #dce6d9, transparent 65%);
+}
+
+main {
+  display: grid;
+  grid-template-columns: minmax(230px, 2fr) minmax(300px, 3fr);
+  width: min(100%, 810px);
+  border-radius: 24px;
+  overflow: hidden;
+  background: #fff;
+  border: 1px solid #d3dfd5;
+  box-shadow: 0 24px 70px #1b2d2517;
+}
+
+aside, section { padding: clamp(24px, 4vw, 52px); }
+
+aside {
+  display: flex;
+  flex-direction: column;
+  color: #eaf2df;
+  background: radial-gradient(ellipse at bottom left, #365c48, #183128 72%);
+}
+
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 700; }
+.brand img { border-radius: 8px; background: #fff; object-fit: contain; }
+aside p { margin: auto 0 16px; padding-top: 56px; font-size: clamp(32px, 5vw, 50px); line-height: 1.15; font-weight: 750; }
+aside small, .eyebrow { letter-spacing: .14em; font-size: .75rem; font-weight: 750; }
+.eyebrow { margin: 0 0 8px; color: #47715a; }
+h1 { margin: 0; font-size: clamp(1.8rem, 4vw, 2.35rem); line-height: 1.2; }
+.message { margin: 12px 0 24px; color: #526358; }
+.message.error { padding: 10px 12px; border: 1px solid #edcbc4; border-radius: 9px; background: #fff3ef; color: #87352c; }
+form { display: grid; gap: 8px; }
+label { font-size: .875rem; font-weight: 650; }
+
+input:not([type="hidden"]) {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid #bccfc0;
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  font: inherit;
+  color: inherit;
+  background: #f8fbf7;
+}
+
+button {
+  min-height: 44px;
+  border: 0;
+  border-radius: 10px;
+  padding: 10px 16px;
+  margin-top: 8px;
+  background: #27503d;
+  color: #fff;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+button:hover { background: #38664e; }
+:focus-visible { outline: 2px solid #2b7753; outline-offset: 3px; }
+.auth-footer { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-top: 21px; }
+.auth-footer a, .privacy-page a { display: inline-flex; align-items: center; gap: 5px; min-height: 36px; font-size: .875rem; color: #305a46; text-underline-offset: 3px; }
+.privacy-page { display: block; width: min(680px, 100%); }
+.privacy-page h2 { margin: 24px 0 6px; font-size: 1.13rem; }
+.privacy-page p { margin: 0; color: #526358; overflow-wrap: anywhere; }
+.privacy-page .eyebrow { margin-bottom: 8px; }
+.privacy-page a { margin-top: 16px; }
+
+@media (max-width: 600px) {
+  main { grid-template-columns: minmax(0, 1fr); border-radius: 18px; }
+  aside p, aside small { display: none; }
+}

@@ -1,0 +1,595 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#112821">
+  <meta name="description" content="中传校园助手的普通用户对话工作台">
+  <title>中传校园助手</title>
+  <link rel="icon" href="/campus.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/auth/password.css">
+  <script type="module" src="/app.js"></script>
+  <script src="/auth/password.js" defer></script>
+</head>
+<body>
+  <svg class="sprite" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+    <symbol id="i-brand" viewBox="0 0 24 24"><path d="M12 3v2m-5.7-.3 1.4 1.4m10-.1 1.4-1.4M4 16h16M5 21h14M6 16v5m12-5v5M8 16V9h8v7m-6 0v-4h4v4"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-edit" viewBox="0 0 24 24"><path d="m14.5 6.5 3 3M5 19l4-.8 9.2-9.2a2.1 2.1 0 0 0-3-3L6 15l-1 4Z"/></symbol>
+    <symbol id="i-chat" viewBox="0 0 24 24"><path d="M20 11.5a7.5 7.5 0 0 1-7.5 7.5H5l1.5-3A7.5 7.5 0 1 1 20 11.5Z"/><path d="M9 12h6"/></symbol>
+    <symbol id="i-stack" viewBox="0 0 24 24"><path d="m12 3 9 5-9 5-9-5 9-5Zm-9 9 9 5 9-5M3 16l9 5 9-5"/></symbol>
+    <symbol id="i-pin" viewBox="0 0 24 24"><path d="M19 10c0 5-7 10-7 10s-7-5-7-10a7 7 0 1 1 14 0Z"/><circle cx="12" cy="10" r="2.2"/></symbol>
+    <symbol id="i-map" viewBox="0 0 24 24"><path d="m3 6 6-3 6 3 6-3v15l-6 3-6-3-6 3V6Zm6-3v15m6-12v15"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="5.5"/><path d="m15 15 5 5"/></symbol>
+    <symbol id="i-calendar" viewBox="0 0 24 24"><rect x="4" y="6" width="16" height="15" rx="2"/><path d="M8 3v6m8-6v6M4 11h16m-11 5h2m3 0h1"/></symbol>
+    <symbol id="i-books" viewBox="0 0 24 24"><path d="M4 5h5v14H4zm5 0h5v14H9m6-13 4-1 3 13-4 1z"/></symbol>
+    <symbol id="i-gym" viewBox="0 0 24 24"><path d="M2 10v4m4-7v10m12-10v10m4-7v4M6 12h12"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3l7 3v5c0 4-2.5 7-7 10-4.5-3-7-6-7-10V6l7-3Z"/><path d="m9 12 2 2 4-4"/></symbol>
+    <symbol id="i-send" viewBox="0 0 24 24"><path d="M12 19V5m-6 6 6-6 6 6"/></symbol>
+    <symbol id="i-diagonal" viewBox="0 0 24 24"><path d="M7 17 17 7M7 7h10v10"/></symbol>
+    <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.5"/><path d="M5 20v-1a7 7 0 0 1 14 0v1"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><path d="M10 3h4l.6 2.5 1.9 1.1 2.5-.7 2 3.5-1.9 1.8v2.2l1.9 1.8-2 3.5-2.5-.7-1.9 1.1-.6 2.5h-4l-.6-2.5-1.9-1.1-2.5.7-2-3.5 1.9-1.8v-2.2L3 9.4l2-3.5 2.5.7 1.9-1.1L10 3Z"/><circle cx="12" cy="12.3" r="3"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m7 9 5 5 5-5"/></symbol>
+    <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16m-10 4v6m4-6v6M6 7l1 13h10l1-13M9 7V4h6v3"/></symbol>
+    <symbol id="i-retry" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2 6m2-11v5h-5"/></symbol>
+    <symbol id="i-withdraw" viewBox="0 0 24 24"><path d="m9 5-5 5 5 5m-5-5h9a6 6 0 0 1 6 6v3"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 5 5 9-10"/></symbol>
+    <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3v3m0 12v3M3 12h3m12 0h3M6 6l2 2m8 8 2 2m0-12-2 2m-8 8-2 2"/><circle cx="12" cy="12" r="3"/></symbol>
+  </svg>
+
+  <section class="landing" id="landing" aria-labelledby="welcome-title">
+    <div class="hero" id="welcome-hero">
+      <div class="hero-university" lang="en" aria-hidden="true">
+        <span>COMMUNICATION</span>
+        <span>UNIVERSITY OF CHINA</span>
+      </div>
+      <div class="hero-visual" aria-hidden="true">
+        <img class="hero-art" src="/campus-atlas.svg" alt="" width="580" height="352">
+      </div>
+      <div class="hero-content wrap">
+        <div class="hero-mark" aria-hidden="true">
+          <svg viewBox="0 0 100 100">
+            <circle class="brand-ring brand-ring-outer" cx="50" cy="50" r="40" pathLength="360"
+              fill="none" stroke="#ed2939" stroke-width="10" stroke-linecap="round" stroke-dasharray="288 72" stroke-dashoffset="-36"/>
+            <circle class="brand-ring brand-ring-middle" cx="50" cy="50" r="26" pathLength="360"
+              fill="none" stroke="#214cf3" stroke-width="10" stroke-linecap="round" stroke-dasharray="280 80" stroke-dashoffset="-220"/>
+            <circle class="brand-ring brand-ring-inner" cx="50" cy="50" r="12" pathLength="360"
+              fill="none" stroke="#08b643" stroke-width="10" stroke-linecap="round" stroke-dasharray="252 108" stroke-dashoffset="-324"/>
+          </svg>
+        </div>
+        <div class="hero-copy">
+          <p class="hero-label"><svg aria-hidden="true"><use href="#i-spark"></use></svg> 中国传媒大学 · 校园助手</p>
+          <h1 id="welcome-title">今天想了解<br><em>中传校园的哪一面</em></h1>
+          <p class="hero-description">从一条路线、一则公告，或一个办事问题开始。</p>
+        </div>
+      </div>
+      <p class="landing-cue">进入工作台<span aria-hidden="true"></span></p>
+      <a class="landing-privacy" href="/privacy">隐私说明</a>
+      <div class="hero-lens" id="hero-lens" aria-hidden="true"></div>
+    </div>
+  </section>
+
+  <div class="layout" id="workspace-layout">
+    <aside class="sidebar" id="sidebar" aria-label="会话导航">
+      <a class="brand" href="#landing">
+        <span class="brand-mark cuc-emblem" aria-hidden="true"></span>
+        <span><strong>中传校园助手</strong><small lang="en">CUC CAMPUS DESK</small></span>
+      </a>
+      <button class="new-chat" id="new-chat" type="button">
+        <svg aria-hidden="true"><use href="#i-plus"></use></svg> 新建会话
+      </button>
+      <section class="side-section" aria-labelledby="instance-label">
+        <div class="side-heading">
+          <label class="side-label" id="instance-label" for="instance-select">我的实例</label>
+          <button class="side-link" id="edit-instance" type="button" aria-label="管理实例" aria-haspopup="dialog" disabled>管理</button>
+        </div>
+        <div class="instance-row">
+          <div class="select-wrap instance-select">
+            <svg aria-hidden="true"><use href="#i-stack"></use></svg>
+            <select id="instance-select" disabled><option>登录后可选择</option></select>
+            <svg class="select-chevron" aria-hidden="true"><use href="#i-chevron"></use></svg>
+          </div>
+          <button class="icon-button add-instance" id="add-instance" type="button" title="创建实例" aria-label="创建实例" disabled>
+            <svg aria-hidden="true"><use href="#i-plus"></use></svg>
+          </button>
+        </div>
+      </section>
+      <nav class="side-section history" aria-labelledby="history-label">
+        <h2 class="side-label" id="history-label">会话</h2>
+        <label class="history-search" id="history-search" hidden>
+          <svg aria-hidden="true"><use href="#i-search"></use></svg>
+          <span class="sr-only">搜索当前实例的会话标题</span>
+          <input type="search" id="history-query" placeholder="搜索会话标题" maxlength="200" autocomplete="off">
+        </label>
+        <div class="history-scroll" id="history-scroll">
+          <div id="history-list" class="history-list"></div>
+          <p class="history-empty" id="history-empty" role="status">登录后可以查看你的会话</p>
+          <button class="text-button more-history" type="button" id="older-chats" hidden>加载更多</button>
+        </div>
+      </nav>
+      <button class="side-settings" id="side-settings" type="button" aria-haspopup="dialog" aria-controls="settings-dialog">
+        <span class="avatar"><svg aria-hidden="true"><use href="#i-settings"></use></svg></span>
+        <span><strong>设置</strong><small id="side-settings-hint">外观与账号</small></span>
+      </button>
+    </aside>
+    <button class="mobile-scrim" id="close-sidebar" type="button" aria-label="关闭导航" hidden></button>
+
+    <main class="workspace" aria-label="校园问答工作台">
+      <canvas class="workspace-background" id="workspace-background" aria-hidden="true" hidden></canvas>
+      <header class="topbar">
+        <div class="topbar-title">
+          <button class="icon-button menu-button" type="button" id="open-sidebar" aria-label="打开会话导航" aria-controls="sidebar" aria-expanded="false">
+            <svg aria-hidden="true"><use href="#i-menu"></use></svg>
+          </button>
+          <span class="topbar-section">工作台</span>
+          <span class="topbar-divider" aria-hidden="true">/</span>
+          <span class="topbar-heading">校园问答</span>
+          <span class="campus-badge"><svg aria-hidden="true"><use href="#i-pin"></use></svg>北京校区</span>
+        </div>
+        <div class="topbar-details">
+          <span class="workspace-context" id="workspace-context" hidden><i aria-hidden="true"></i><span id="workspace-context-label"></span></span>
+          <span class="topbar-greeting" id="topbar-greeting"></span>
+        </div>
+      </header>
+
+      <div class="workspace-body">
+        <div class="campus-avatar" id="campus-avatar">
+          <button class="avatar-figure" type="button" aria-label="和传传打招呼" disabled>
+            <canvas class="avatar-model" aria-hidden="true"></canvas>
+            <svg class="avatar-wave" viewBox="0 0 176 60" aria-hidden="true">
+              <path class="avatar-wave-guide" d="M4 30h168"/>
+              <path class="avatar-wave-pulse" d="M21 27v6m8-8v10m8-12v14m8-11v8m8-14v20m8-25v30m8-23v16m8-29v42m8-47v52m8-42v32m8-27v22m8-30v38m8-27v16m8-14v12m8-15v18m8-13v8m8-6v4"/>
+            </svg>
+          </button>
+          <div class="avatar-greeting" aria-hidden="true" hidden>
+            <span class="avatar-greeting-text"></span>
+            <svg class="avatar-greeting-tail" viewBox="0 0 24 22">
+              <path class="avatar-greeting-tail-fill" d="M12 0h12v15.5C15 15.5 7 18 1 21c5-5 9-10 11-16Z"/>
+              <path d="M12 0v5C10 11 6 16 1 21c6-3 14-5.5 23-5.5"/>
+            </svg>
+          </div>
+          <span class="sr-only avatar-greeting-status" role="status"></span>
+          <div class="avatar-caption">
+            <strong>传传</strong>
+            <button class="icon-button avatar-hide" id="hide-campus-avatar" type="button" aria-label="隐藏传传模型" title="隐藏传传模型">
+              <svg aria-hidden="true"><use href="#i-close"></use></svg>
+            </button>
+          </div>
+        </div>
+
+        <nav class="turn-nav" id="turn-nav" aria-label="本会话的历史对话" hidden>
+          <button class="turn-nav-older" id="turn-nav-older" type="button"
+            aria-label="加载更早的对话" title="加载更早的对话" hidden>
+            <svg aria-hidden="true"><use href="#i-chevron"></use></svg>
+          </button>
+          <div class="turn-ticks" id="turn-ticks" role="toolbar" aria-label="跳转到对话轮次" aria-orientation="vertical"></div>
+          <div class="turn-preview" id="turn-preview" aria-hidden="true" hidden>
+            <span id="turn-preview-time"></span>
+            <strong id="turn-preview-question"></strong>
+            <p id="turn-preview-answer"></p>
+          </div>
+        </nav>
+
+        <div class="viewport" id="viewport">
+          <div class="notice wrap" id="notice" role="status" hidden>
+            <span id="notice-text"></span><button class="text-button" id="notice-action" type="button" hidden>重试</button>
+          </div>
+          <section class="workspace-empty wrap" id="workspace-empty" aria-labelledby="workspace-empty-title">
+            <h1 id="workspace-empty-title">开启一段校园对话</h1>
+            <p>在下方输入问题，或从左侧打开已有会话。</p>
+            <section class="topics" aria-labelledby="topics-title">
+              <div class="topics-heading"><h2 id="topics-title">探索校园</h2><span>选一个主题，试试示例问题</span></div>
+              <div class="topic-grid">
+                <button class="topic" data-role="campus_introduction" data-prompt="从中传北京校区的校门到图书馆怎么走？" type="button">
+                  <span class="topic-icon mint"><svg aria-hidden="true"><use href="#i-map"></use></svg></span>
+                  <svg class="topic-arrow" aria-hidden="true"><use href="#i-diagonal"></use></svg>
+                  <strong>校园介绍</strong><span class="topic-detail">校园地点与路线</span>
+                </button>
+                <button class="topic" data-role="information_search" data-prompt="新生报到前，需要准备哪些材料？请帮我找相关的官方说明。" type="button">
+                  <span class="topic-icon blue"><svg aria-hidden="true"><use href="#i-search"></use></svg></span>
+                  <svg class="topic-arrow" aria-hidden="true"><use href="#i-diagonal"></use></svg>
+                  <strong>信息搜寻</strong><span class="topic-detail">校园公告与资料</span>
+                </button>
+                <button class="topic" data-role="campus_services" data-prompt="我想了解校园体育场馆的开放时间和预约流程。" type="button">
+                  <span class="topic-icon amber"><svg aria-hidden="true"><use href="#i-calendar"></use></svg></span>
+                  <svg class="topic-arrow" aria-hidden="true"><use href="#i-diagonal"></use></svg>
+                  <strong>校园服务</strong><span class="topic-detail">场馆、课表与办事</span>
+                </button>
+                <button class="topic" data-role="rumor_assessment" data-prompt="有人说中传北京校区的图书馆这周末会临时闭馆，可以帮我核实这条消息吗？" type="button">
+                  <span class="topic-icon lilac"><svg aria-hidden="true"><use href="#i-shield"></use></svg></span>
+                  <svg class="topic-arrow" aria-hidden="true"><use href="#i-diagonal"></use></svg>
+                  <strong>谣言判别</strong><span class="topic-detail">核对传闻与出处</span>
+                </button>
+              </div>
+            </section>
+          </section>
+
+          <section class="chat wrap" id="chat" aria-labelledby="chat-title" hidden>
+            <div class="chat-heading">
+              <div><p class="eyebrow" id="chat-instance"></p><h1 id="chat-title"></h1></div>
+              <button class="outline-button chat-settings" id="manage-chat" type="button" aria-label="管理当前会话" aria-haspopup="dialog">
+                <svg aria-hidden="true"><use href="#i-more"></use></svg><span>管理会话</span>
+              </button>
+            </div>
+            <button class="outline-button older-messages" id="older-messages" type="button" hidden>加载更早的消息</button>
+            <div class="message-list" id="messages" aria-live="polite" aria-relevant="additions"></div>
+          </section>
+        </div>
+
+        <div class="chat-companion-dock" id="chat-companion-dock" hidden>
+          <button class="chat-companion" type="button" aria-label="和传传打招呼" title="传传 · 轻点问候，可拖动贴边">
+            <img alt="" draggable="false">
+          </button>
+          <div class="avatar-greeting chat-companion-greeting" aria-hidden="true" hidden>
+            <span class="avatar-greeting-text"></span>
+          </div>
+          <span class="sr-only avatar-greeting-status" role="status"></span>
+        </div>
+
+        <div class="composer-region">
+          <div class="wrap">
+            <div class="run-status" id="run-status" role="status" hidden>
+              <span class="status-dot" aria-hidden="true"></span><span id="run-status-text"></span>
+              <button class="text-button" id="run-action" type="button" hidden></button>
+            </div>
+            <form id="composer" class="composer" method="post">
+              <label class="sr-only" for="query">输入校园问题</label>
+              <textarea id="query" name="query" maxlength="12000" rows="2" placeholder="问问校园助手…"></textarea>
+              <div class="composer-controls">
+                <label class="select-wrap route-select">
+                  <span class="sr-only">建议协作角色</span>
+                  <svg aria-hidden="true"><use href="#i-stack"></use></svg>
+                  <select id="target">
+                    <option value="">由助手决定</option>
+                    <option value="campus_introduction">校园介绍</option>
+                    <option value="information_search">信息搜寻</option>
+                    <option value="campus_services">校园服务</option>
+                    <option value="rumor_assessment">谣言判别</option>
+                  </select>
+                  <svg class="select-chevron" aria-hidden="true"><use href="#i-chevron"></use></svg>
+                </label>
+                <div class="composer-actions">
+                  <span class="composer-key" aria-hidden="true">↵</span>
+                  <button type="submit" class="send-button" id="send" aria-label="发送问题" title="发送问题">
+                    <svg aria-hidden="true"><use href="#i-send"></use></svg>
+                  </button>
+                </div>
+              </div>
+            </form>
+          </div>
+        </div>
+        <footer class="composer-notes">
+          <div class="wrap">
+            <p class="composer-hint" id="composer-hint">登录后即可发送问题并保存会话</p>
+            <p class="composer-credit">由deepseek-v4.1-flash提供服务</p>
+          </div>
+        </footer>
+      </div>
+    </main>
+
+    <div class="campus-apps">
+      <button class="campus-apps-toggle" id="campus-apps-toggle" type="button" aria-expanded="false" aria-controls="campus-apps-drawer">
+        <svg aria-hidden="true"><use href="#i-chevron"></use></svg><span>校园应用</span>
+      </button>
+      <div class="campus-apps-window">
+        <aside class="campus-apps-drawer" id="campus-apps-drawer" aria-labelledby="campus-apps-label" inert>
+          <h2 id="campus-apps-label">校园应用</h2>
+          <label class="campus-apps-search">
+            <svg aria-hidden="true"><use href="#i-search"></use></svg>
+            <span class="sr-only">搜索校园应用</span>
+            <input type="search" id="campus-apps-query" aria-controls="campus-apps-list" placeholder="搜索应用" autocomplete="off">
+          </label>
+          <div class="campus-apps-list" id="campus-apps-list">
+            <button class="outline-button" type="button" data-campus-panel="schedule" aria-haspopup="dialog">
+              <svg aria-hidden="true"><use href="#i-calendar"></use></svg>个人日程
+            </button>
+            <button class="outline-button" type="button" data-campus-panel="calendar-sync" aria-haspopup="dialog" aria-controls="campus-panel">
+              <svg aria-hidden="true"><use href="#i-calendar"></use></svg>日历同步
+            </button>
+            <button class="outline-button" type="button" data-campus-panel="semester-report" aria-haspopup="dialog" aria-controls="campus-panel">
+              <svg aria-hidden="true"><use href="#i-books"></use></svg>学期报告
+            </button>
+            <button class="outline-button" type="button" data-campus-panel="activities" aria-haspopup="dialog">
+              <svg aria-hidden="true"><use href="#i-calendar"></use></svg>校园活动
+            </button>
+            <button class="outline-button" type="button" data-campus-panel="wechat" aria-haspopup="dialog">
+              <svg aria-hidden="true"><use href="#i-chat"></use></svg>公众号总成
+            </button>
+            <button class="outline-button" type="button" data-campus-panel="rumor" aria-haspopup="dialog">
+              <svg aria-hidden="true"><use href="#i-shield"></use></svg>校园传闻与辟谣
+            </button>
+            <button class="outline-button" type="button" data-campus-panel="map" aria-haspopup="dialog">
+              <svg aria-hidden="true"><use href="#i-map"></use></svg>校园地图
+            </button>
+            <button class="outline-button" type="button" data-campus-panel="classrooms" aria-haspopup="dialog">
+              <svg aria-hidden="true"><use href="#i-pin"></use></svg>教室预约
+            </button>
+            <button class="outline-button" type="button" data-campus-panel="gym" aria-haspopup="dialog">
+              <svg aria-hidden="true"><use href="#i-gym"></use></svg>体育馆预约
+            </button>
+            <button class="outline-button" type="button" data-campus-panel="library" aria-haspopup="dialog">
+              <svg aria-hidden="true"><use href="#i-books"></use></svg>图书馆
+            </button>
+            <button class="outline-button" type="button" data-campus-panel="clubs" aria-haspopup="dialog">
+              <svg aria-hidden="true"><use href="#i-user"></use></svg>社团
+            </button>
+          </div>
+          <p class="campus-apps-empty" id="campus-apps-empty" role="status" hidden>未找到匹配的应用。</p>
+        </aside>
+      </div>
+    </div>
+    <button class="campus-apps-scrim" id="campus-apps-scrim" type="button" tabindex="-1" aria-label="关闭校园应用"></button>
+  </div>
+
+  <dialog id="auth-dialog" aria-labelledby="auth-title">
+    <div class="dialog-head">
+      <span class="brand-mark"><svg aria-hidden="true"><use href="#i-brand"></use></svg></span>
+      <button class="icon-button" type="button" data-close aria-label="关闭"><svg aria-hidden="true"><use href="#i-close"></use></svg></button>
+    </div>
+    <h2 id="auth-title"></h2>
+    <p class="dialog-intro" id="auth-intro"></p>
+    <p class="form-feedback" id="auth-feedback" role="status" hidden></p>
+    <form method="post" data-auth-form="login" data-path="/v1/auth/login">
+      <label>邮箱<input type="email" name="email" autocomplete="username" maxlength="320" required></label>
+      <div>
+        <label class="password-label" for="login-password">密码</label>
+        <div class="password-input" data-password-control>
+          <input id="login-password" type="password" name="password" autocomplete="current-password" maxlength="128" required>
+          <button type="button" hidden>显示</button>
+        </div>
+      </div>
+      <div class="login-remember">
+        <label class="checkbox-label">
+          <input type="checkbox" name="remember_me" aria-describedby="remember-hint"><span>记住我</span>
+        </label>
+        <p id="remember-hint">邮箱密码登录后，在此浏览器保持登录最多 30 天，期间无需重复验证邮箱。请在个人设备上使用。</p>
+      </div>
+      <button class="primary-button" type="submit">登录</button>
+      <button class="outline-button sso-button" id="campus-login" type="button" hidden>使用校园统一认证</button>
+      <div class="form-links">
+        <button class="text-button" data-auth-mode="register" type="button">注册账号</button>
+        <button class="text-button" data-auth-mode="password-request" type="button">忘记密码</button>
+      </div>
+    </form>
+    <form method="post" data-auth-form="register" data-path="/v1/auth/register" hidden>
+      <label>称呼 <span>选填，默认使用登记姓名</span><input name="display_name" autocomplete="nickname" maxlength="50"></label>
+      <label>邮箱<input type="email" name="email" autocomplete="username" maxlength="320" required></label>
+      <div>
+        <label class="password-label" for="register-password">密码 <span id="register-password-hint">8–128 字符，含数字和小写字母</span></label>
+        <div class="password-input" data-password-control>
+          <input id="register-password" type="password" name="password" aria-describedby="register-password-hint" autocomplete="new-password" minlength="8" maxlength="128" pattern="(?=.*[0-9])(?=.*[a-z]).*" title="包含数字和小写英文字母" required>
+          <button type="button" hidden>显示</button>
+        </div>
+      </div>
+      <label>确认密码<input type="password" name="password_confirmation" autocomplete="new-password" maxlength="128" required></label>
+      <button class="primary-button" type="submit">注册</button>
+      <button class="text-button" data-auth-mode="login" type="button">返回登录</button>
+    </form>
+    <form method="post" data-auth-form="verify" data-path="/v1/auth/verification/confirm" hidden>
+      <label>邮箱验证令牌<input name="token" autocomplete="one-time-code" maxlength="256" required></label>
+      <button class="primary-button" type="submit">验证邮箱</button>
+      <div class="form-links">
+        <button class="text-button" data-auth-mode="verification-request" type="button">重发验证邮件</button>
+        <button class="text-button" data-auth-mode="login" type="button">返回登录</button>
+      </div>
+    </form>
+    <form method="post" data-auth-form="verification-request" data-path="/v1/auth/verification/request" hidden>
+      <label>邮箱<input id="verification-email" type="email" name="email" autocomplete="email" maxlength="320" required></label>
+      <button class="primary-button" id="verification-resend" type="submit">发送验证邮件</button>
+      <button class="text-button" data-auth-mode="verify" type="button">输入验证令牌</button>
+    </form>
+    <form method="post" data-auth-form="password-request" data-path="/v1/auth/password/request" hidden>
+      <label>邮箱<input id="reset-email" type="email" name="email" autocomplete="email" maxlength="320" required></label>
+      <button class="primary-button" id="reset-send" type="submit">发送重置邮件</button>
+      <div class="form-links">
+        <button class="text-button" data-auth-mode="reset" type="button">已有重置令牌</button>
+        <button class="text-button" data-auth-mode="login" type="button">返回登录</button>
+      </div>
+    </form>
+    <form method="post" data-auth-form="reset" data-path="/v1/auth/password/reset" hidden>
+      <label>密码重置令牌<input name="token" autocomplete="one-time-code" maxlength="256" required></label>
+      <label>新密码 <span>8–128 字符，含数字和小写字母</span><input type="password" name="new_password" autocomplete="new-password" minlength="8" maxlength="128" pattern="(?=.*[0-9])(?=.*[a-z]).*" title="包含数字和小写英文字母" required></label>
+      <button class="primary-button" type="submit">重置密码</button>
+      <div class="form-links">
+        <button class="text-button" data-auth-mode="password-request" type="button">重发重置邮件</button>
+        <button class="text-button" data-auth-mode="login" type="button">返回登录</button>
+      </div>
+    </form>
+    <footer class="dialog-footer"><a href="/privacy" target="_blank" rel="noopener">隐私说明</a></footer>
+  </dialog>
+
+  <dialog id="instance-dialog" aria-labelledby="instance-title">
+    <div class="dialog-head">
+      <div><p class="dialog-kicker">工作台设置</p><h2 id="instance-title">创建实例</h2></div>
+      <button class="icon-button" type="button" data-close aria-label="关闭"><svg aria-hidden="true"><use href="#i-close"></use></svg></button>
+    </div>
+    <p class="dialog-intro" id="instance-intro">每个实例拥有独立的会话列表。</p>
+    <div class="management-layout">
+      <div class="instance-directory" id="instance-directory" hidden>
+        <p class="directory-label">选择要管理的实例</p>
+        <div id="instance-directory-list"></div>
+      </div>
+      <form id="instance-form" method="post">
+        <label>实例名称<input name="name" maxlength="100" placeholder="例如：我的校园助手" required></label>
+        <label id="instance-status-label" hidden>实例状态
+          <select name="status" disabled>
+            <option value="active">已启用</option>
+            <option value="paused">已暂停</option>
+          </select>
+        </label>
+        <label class="checkbox-label" id="instance-default-label" hidden>
+          <input name="is_default" type="checkbox" disabled><span id="instance-default-copy">设为默认实例</span>
+        </label>
+        <p class="form-feedback" id="instance-feedback" role="status" hidden></p>
+        <div class="dialog-actions">
+          <button class="danger-text" id="instance-delete" type="button" hidden>
+            <svg aria-hidden="true"><use href="#i-trash"></use></svg>删除实例
+          </button>
+          <button class="primary-button" id="instance-submit" type="submit">创建实例</button>
+        </div>
+      </form>
+    </div>
+  </dialog>
+
+  <dialog id="conversation-dialog" aria-labelledby="conversation-title">
+    <div class="dialog-head">
+      <div><p class="dialog-kicker">对话记录</p><h2 id="conversation-title">管理会话</h2></div>
+      <button class="icon-button" type="button" data-close aria-label="关闭"><svg aria-hidden="true"><use href="#i-close"></use></svg></button>
+    </div>
+    <p class="dialog-intro" id="conversation-intro"></p>
+    <form id="conversation-form" method="post">
+      <label>会话标题<input name="title" maxlength="200" required></label>
+      <p class="form-feedback" id="conversation-feedback" role="status" hidden></p>
+      <div class="dialog-actions">
+        <button class="danger-text" id="conversation-delete" type="button"><svg aria-hidden="true"><use href="#i-trash"></use></svg>删除会话</button>
+        <button class="primary-button" id="conversation-submit" type="submit">保存标题</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="delete-dialog" aria-labelledby="delete-title" aria-describedby="delete-intro">
+    <div class="delete-mark"><svg aria-hidden="true"><use href="#i-trash"></use></svg></div>
+    <h2 id="delete-title">删除确认</h2>
+    <p class="dialog-intro" id="delete-intro" aria-live="polite"></p>
+    <p class="form-feedback" id="delete-feedback" role="status" hidden></p>
+    <div class="dialog-actions">
+      <button class="outline-button" id="delete-cancel" type="button" autofocus>取消</button>
+      <button class="danger-button" id="delete-confirm" type="button">永久删除</button>
+    </div>
+  </dialog>
+
+  <dialog id="campus-panel" aria-labelledby="campus-panel-title" aria-describedby="campus-panel-intro">
+    <div id="campus-panel-controls" hidden></div>
+    <div class="campus-panel-body">
+      <div class="dialog-head">
+        <h2 id="campus-panel-title">校园应用</h2>
+        <div class="panel-actions">
+          <button class="text-button" id="campus-panel-refresh" type="button">刷新</button>
+          <button class="icon-button" type="button" id="campus-panel-close" aria-label="关闭组件窗口" autofocus><svg aria-hidden="true"><use href="#i-close"></use></svg></button>
+        </div>
+      </div>
+      <p class="dialog-intro" id="campus-panel-intro"></p>
+      <div id="campus-panel-inline-controls" hidden></div>
+      <p class="form-feedback" id="campus-panel-status" role="status" hidden></p>
+      <div id="campus-panel-content"></div>
+    </div>
+  </dialog>
+
+  <dialog id="settings-dialog" aria-labelledby="settings-title">
+    <div class="dialog-head">
+      <h2 id="settings-title">设置</h2>
+      <button class="icon-button" type="button" data-close aria-label="关闭设置" autofocus><svg aria-hidden="true"><use href="#i-close"></use></svg></button>
+    </div>
+    <section class="settings-section" aria-labelledby="appearance-title">
+      <h3 id="appearance-title">外观</h3>
+      <label for="theme-select">配色主题</label>
+      <select id="theme-select">
+        <option value="campus">校园绿</option>
+        <option value="lake">湖蓝</option>
+        <option value="violet">暮紫</option>
+        <option value="custom">自定义</option>
+      </select>
+      <label class="settings-avatar-toggle">
+        <input type="checkbox" id="show-campus-avatar" checked aria-controls="campus-avatar">
+        显示传传模型
+      </label>
+      <div class="custom-theme" id="custom-theme" hidden>
+        <div class="theme-colors">
+          <label>主色<input type="color" name="accent" value="#27614d"></label>
+          <label>工作台背景<input type="color" name="paper" value="#f4f6f2"></label>
+          <label>侧栏与欢迎页底色<input type="color" name="rail" value="#112821"></label>
+        </div>
+        <div class="theme-editor-footer">
+          <p class="settings-hint">自动搭配深浅色，配色保存在当前浏览器。</p>
+          <button class="text-button" id="reset-custom-theme" type="button">恢复默认配色</button>
+        </div>
+        <div class="background-settings">
+          <label for="workspace-image-file">工作台背景图</label>
+          <input id="workspace-image-file" type="file" accept="image/png,image/jpeg,image/webp" disabled>
+          <div class="theme-editor-footer">
+            <p class="settings-hint">PNG、JPG 或 WebP，最大 10 MB。</p>
+            <button class="text-button" id="remove-workspace-image" type="button" disabled>移除背景图</button>
+          </div>
+          <div class="background-opacity">
+            <label for="background-opacity">背景图不透明度</label>
+            <output id="background-opacity-value" for="background-opacity">35%</output>
+            <input id="background-opacity" type="range" min="0" max="100" step="1" value="35" disabled>
+          </div>
+          <p class="form-feedback" id="workspace-image-feedback" role="status" hidden></p>
+        </div>
+      </div>
+      <p class="form-feedback" id="theme-storage-feedback" role="status" hidden></p>
+    </section>
+    <section class="settings-section" aria-labelledby="settings-account-title">
+      <h3 id="settings-account-title">账号</h3>
+      <div id="settings-guest">
+        <p class="dialog-intro">当前为访客。</p>
+        <button class="primary-button" id="settings-login" type="button">登录 / 注册</button>
+      </div>
+      <div id="settings-account" hidden>
+        <p class="account-name" id="account-name"></p>
+        <p class="dialog-intro account-email" id="account-email"></p>
+        <p class="account-user-id" id="account-user-id-row" hidden>用户 ID <code id="account-user-id"></code></p>
+        <p class="form-feedback" id="account-feedback" role="status" hidden></p>
+        <p id="campus-account-state" class="dialog-intro"></p>
+        <div class="settings-account-actions">
+          <button class="outline-button" id="open-profile" type="button" aria-haspopup="dialog" aria-controls="profile-dialog">个人资料</button>
+          <button class="outline-button" id="open-personal-space" type="button" aria-haspopup="dialog" aria-controls="campus-panel">个人空间</button>
+          <button class="outline-button" id="open-password-change" type="button" aria-haspopup="dialog" aria-controls="password-dialog">修改密码</button>
+          <button class="outline-button" id="logout" type="button">退出登录</button>
+        </div>
+      </div>
+    </section>
+    <footer class="dialog-footer"><a href="/privacy" target="_blank" rel="noopener">隐私说明</a></footer>
+  </dialog>
+
+  <dialog id="profile-dialog" aria-labelledby="profile-title" aria-describedby="profile-intro">
+    <div class="dialog-head">
+      <h2 id="profile-title">个人资料</h2>
+      <button class="icon-button" id="close-profile" type="button" data-close aria-label="关闭"><svg aria-hidden="true"><use href="#i-close"></use></svg></button>
+    </div>
+    <p class="dialog-intro" id="profile-intro"></p>
+    <p class="form-feedback" id="profile-feedback" role="status" hidden></p>
+    <form id="campus-link" method="post" hidden>
+      <label>当前邮箱密码<input type="password" name="current_password" autocomplete="current-password" maxlength="128" required></label>
+      <button class="primary-button" type="submit">前往校园统一认证</button>
+    </form>
+    <form id="profile-form" method="post" hidden>
+      <label>姓名<input name="full_name" autocomplete="name" maxlength="80" required></label>
+      <label>称呼 <span>选填，默认使用姓名</span><input name="display_name" autocomplete="nickname" maxlength="50"></label>
+      <label><strong id="campus-number-label">学号</strong><span id="profile-campus-number-source" hidden>来自统一身份认证</span><input name="campus_number" maxlength="32" autocomplete="off" required></label>
+      <label>学院<input name="college" maxlength="100" autocomplete="organization" required></label>
+      <label id="profile-grade-label">年级<select name="grade" required></select></label>
+      <button class="primary-button" type="submit">保存个人资料</button>
+    </form>
+    <div class="settings-account-actions">
+      <button class="outline-button" id="profile-retry" type="button" hidden>重新读取</button>
+      <button class="outline-button" id="profile-logout" type="button" hidden>退出登录</button>
+    </div>
+  </dialog>
+
+  <dialog id="password-dialog" aria-labelledby="password-dialog-title" aria-describedby="password-change-hint">
+    <div class="dialog-head">
+      <h2 id="password-dialog-title">修改密码</h2>
+      <button class="icon-button" type="button" data-close aria-label="关闭改密面板" autofocus><svg aria-hidden="true"><use href="#i-close"></use></svg></button>
+    </div>
+    <form id="change-password" method="post">
+      <label>当前密码<input type="password" name="old_password" autocomplete="current-password" maxlength="128" required></label>
+      <p class="password-mail-hint" id="password-change-hint">验证令牌会发送到当前账号的邮箱，10 分钟内有效。</p>
+      <button class="outline-button" id="password-change-send" type="button">发送邮箱验证令牌</button>
+      <label>邮箱验证令牌<input name="token" autocomplete="one-time-code" maxlength="256" required></label>
+      <label>新密码 <span>8–128 字符，含数字和小写字母</span><input type="password" name="new_password" autocomplete="new-password" minlength="8" maxlength="128" pattern="(?=.*[0-9])(?=.*[a-z]).*" title="包含数字和小写英文字母" required></label>
+      <p class="form-feedback" id="password-feedback" role="status" hidden></p>
+      <div class="dialog-actions">
+        <button class="outline-button" type="button" data-close>取消</button>
+        <button class="primary-button" id="password-change-submit" type="submit">验证并保存新密码</button>
+      </div>
+    </form>
+  </dialog>
+  <div class="toast" id="action-toast" role="status" hidden><svg aria-hidden="true"><use href="#i-check"></use></svg><span id="action-toast-text"></span></div>
+</body>
+</html>

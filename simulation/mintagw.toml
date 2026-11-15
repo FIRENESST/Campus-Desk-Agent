@@ -1,0 +1,69 @@
+[[upstream]]
+name = "gymnasium"
+address = "http://127.0.0.1:19101"
+
+[[upstream]]
+name = "club"
+address = "http://127.0.0.1:19102"
+
+[[upstream]]
+name = "library"
+address = "http://127.0.0.1:19103"
+
+[[upstream]]
+name = "classroom"
+address = "http://127.0.0.1:19104"
+
+[[upstream]]
+name = "schedule"
+address = "http://127.0.0.1:19105"
+
+[[http]]
+listen = "127.0.0.1:19000"
+upstream = "gymnasium"
+max_body_bytes = 67108864
+max_response_bytes = 67108864
+timeout_ms = 30000
+max_in_flight = 64
+routes = [
+    { prefix = "/gym/", upstream = "gymnasium", strip_prefix = true },
+    { prefix = "/club/", upstream = "club", strip_prefix = true },
+    { prefix = "/library/", upstream = "library", strip_prefix = true },
+    { prefix = "/classroom/", upstream = "classroom", strip_prefix = true },
+    { prefix = "/schedule/", upstream = "schedule", strip_prefix = true },
+]
+
+[[grpc]]
+listen = "127.0.0.1:19101"
+backend = "http://127.0.0.1:19001"
+max_body_bytes = 67108864
+timeout_ms = 30000
+max_in_flight = 64
+
+[[grpc]]
+listen = "127.0.0.1:19102"
+backend = "http://127.0.0.1:19002"
+max_body_bytes = 67108864
+timeout_ms = 30000
+max_in_flight = 64
+
+[[grpc]]
+listen = "127.0.0.1:19103"
+backend = "http://127.0.0.1:19003"
+max_body_bytes = 67108864
+timeout_ms = 30000
+max_in_flight = 64
+
+[[grpc]]
+listen = "127.0.0.1:19104"
+backend = "http://127.0.0.1:19004"
+max_body_bytes = 67108864
+timeout_ms = 30000
+max_in_flight = 64
+
+[[grpc]]
+listen = "127.0.0.1:19105"
+backend = "http://127.0.0.1:19005"
+max_body_bytes = 67108864
+timeout_ms = 30000
+max_in_flight = 64

@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#17354a">
+  <title>教室调度图则 · Campus Grid 04</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <div class="page-frame">
+    <header class="topbar">
+      <a class="brand" href="./" aria-label="教室调度图则首页">
+        <span class="brand-index">04</span>
+        <span>
+          <strong>校园空间调度所</strong>
+          <small>CAMPUS SPACE REGISTRY</small>
+        </span>
+      </a>
+      <div class="connection" id="connection" data-state="connecting" role="status">
+        <span class="connection-dot" aria-hidden="true"></span>
+        <span id="connectionText">正在接入调度网络</span>
+        <span class="connection-port">127.0.0.1:19004</span>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero" aria-labelledby="pageTitle">
+        <div class="hero-copy">
+          <p class="eyebrow">ACADEMIC SPACE CONTROL / 教室调度图则</p>
+          <h1 id="pageTitle">让每一间教室<br><em>恰好被使用。</em></h1>
+          <p class="hero-description">以教室为坐标，以预约为刻度。查看实时占用，登记使用人，并在计划变更时释放空间。</p>
+        </div>
+        <div class="hero-plan" aria-hidden="true">
+          <span class="plan-axis plan-axis-x">A</span>
+          <span class="plan-axis plan-axis-y">01</span>
+          <div class="plan-room plan-room-one"><span>A101</span></div>
+          <div class="plan-room plan-room-two"><span>A102</span></div>
+          <div class="plan-room plan-room-three"><span>B201</span></div>
+          <div class="plan-room plan-room-four"><span>C305</span></div>
+          <span class="plan-caption">LIVE OCCUPANCY PLAN / N 31°</span>
+        </div>
+      </section>
+
+      <section class="summary-strip" aria-label="教室预约概览">
+        <article>
+          <span class="summary-label">登记教室</span>
+          <strong id="totalRooms">—</strong>
+          <small>TOTAL ROOMS</small>
+        </article>
+        <article>
+          <span class="summary-label">当前可用</span>
+          <strong id="availableRooms">—</strong>
+          <small>AVAILABLE</small>
+        </article>
+        <article>
+          <span class="summary-label">正在占用</span>
+          <strong id="occupiedRooms">—</strong>
+          <small>OCCUPIED</small>
+        </article>
+        <article>
+          <span class="summary-label">活跃预约</span>
+          <strong id="activeReservations">—</strong>
+          <small>ACTIVE RECORDS</small>
+        </article>
+      </section>
+
+      <div class="workspace-grid">
+        <section class="panel rooms-panel" aria-labelledby="roomsTitle">
+          <header class="panel-header">
+            <div>
+              <span class="section-index">01 / SPACE INDEX</span>
+              <h2 id="roomsTitle">教室网格</h2>
+            </div>
+            <button class="button button-quiet" id="refreshButton" type="button" disabled>
+              <span aria-hidden="true">↻</span> 同步数据
+            </button>
+          </header>
+          <div class="room-grid" id="roomsGrid" aria-live="polite">
+            <p class="loading-note">正在读取校园空间坐标…</p>
+          </div>
+        </section>
+
+        <aside class="panel booking-panel" aria-labelledby="bookingTitle">
+          <header class="panel-header">
+            <div>
+              <span class="section-index">02 / REGISTRATION</span>
+              <h2 id="bookingTitle">预约登记台</h2>
+            </div>
+          </header>
+          <form id="reserveForm">
+            <label for="roomSelect">选择教室</label>
+            <select id="roomSelect" name="room_id" required>
+              <option value="">请先同步教室</option>
+            </select>
+
+            <label for="userName">使用人姓名</label>
+            <input id="userName" name="user_name" type="text" maxlength="40" autocomplete="name" placeholder="例如：张明" required>
+
+            <label for="reservationStart">开始时间（北京时间）</label>
+            <input id="reservationStart" name="starts_at" type="datetime-local" required>
+            <label for="reservationEnd">结束时间（北京时间）</label>
+            <input id="reservationEnd" name="ends_at" type="datetime-local" required>
+
+            <div class="rule-note">
+              <span class="rule-mark" aria-hidden="true">1:1</span>
+              <p>每间教室同一时刻仅保留一个活跃预约。取消后，空间会立即重新开放。</p>
+            </div>
+
+            <button class="button button-primary" id="reserveButton" type="submit" disabled>确认登记预约</button>
+          </form>
+          <div class="protocol-note">
+            <span>CHANNEL</span>
+            <code>WS / reserve_room</code>
+          </div>
+        </aside>
+
+        <section class="panel reservations-panel" aria-labelledby="reservationsTitle">
+          <header class="panel-header">
+            <div>
+              <span class="section-index">03 / ACTIVE LEDGER</span>
+              <h2 id="reservationsTitle">当前预约台账</h2>
+            </div>
+            <p class="last-sync">最近同步 <time id="lastSync">尚未同步</time></p>
+          </header>
+          <div class="table-wrap" tabindex="0" role="region" aria-labelledby="reservationsTitle">
+            <table>
+              <caption class="sr-only">当前全部活跃教室预约</caption>
+              <thead>
+                <tr>
+                  <th scope="col">预约编号</th>
+                  <th scope="col">教室坐标</th>
+                  <th scope="col">使用人</th>
+                  <th scope="col">预约时段（北京时间）</th>
+                  <th scope="col">状态</th>
+                  <th scope="col"><span class="sr-only">操作</span></th>
+                </tr>
+              </thead>
+              <tbody id="reservationsBody">
+                <tr><td colspan="6" class="empty-cell">正在读取预约台账…</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <footer class="footer">
+      <span>CAMPUS REGISTRY</span>
+      <span>本地模拟台账会显示登记称呼，请使用演示数据。</span>
+      <span>GRID REF. 19004</span>
+    </footer>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>

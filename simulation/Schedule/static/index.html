@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>课表查询</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Microsoft YaHei", system-ui, sans-serif;
+      color: #18302b;
+      background: #f2f7f4;
+    }
+    main { width: min(1080px, 92%); margin: 56px auto; }
+    h1 { margin: 0 0 8px; font-size: 32px; }
+    .subtitle { margin: 0 0 28px; color: #61736d; }
+    form, .results {
+      padding: 24px;
+      border: 1px solid #dce8e1;
+      border-radius: 16px;
+      background: white;
+      box-shadow: 0 10px 30px #193c2d0a;
+    }
+    .fields { display: grid; grid-template-columns: 2fr 1fr 1fr auto; gap: 16px; align-items: end; }
+    label { display: grid; gap: 8px; font-size: 14px; font-weight: 600; }
+    input, select, button { min-height: 44px; padding: 0 12px; font: inherit; border-radius: 8px; }
+    input, select { min-width: 0; width: 100%; border: 1px solid #bdcec5; background: white; }
+    input:focus, select:focus { outline: 3px solid #3d8b6825; border-color: #3d8b68; }
+    button { border: 0; color: white; background: #257451; cursor: pointer; font-weight: 600; }
+    button:hover:not(:disabled) { background: #1b5d40; }
+    button:disabled { opacity: .65; cursor: wait; }
+    :focus-visible { outline: 2px solid #287650; outline-offset: 3px; }
+    .results { margin-top: 24px; }
+    #status { margin: 0 0 16px; color: #61736d; }
+    #status.error { color: #b42318; }
+    .table-wrap { overflow-x: auto; border: 1px solid #e0ebe4; border-radius: 9px; }
+    .table-wrap:focus-visible { outline-offset: -2px; }
+    table { width: 100%; border-collapse: collapse; white-space: nowrap; }
+    th, td { padding: 12px; border-bottom: 1px solid #e6eee9; text-align: left; }
+    th { color: #52675e; background: #f7faf8; font-size: 14px; }
+    tbody tr:nth-child(even) { background: #f8fbf9; }
+    @media (max-width: 760px) {
+      main { margin: 28px auto; }
+      .fields { grid-template-columns: 1fr; }
+      form, .results { padding: 18px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>课表查询</h1>
+    <p class="subtitle">使用示例学号，按周次与星期查询模拟课表。</p>
+    <form id="query-form">
+      <div class="fields">
+        <label>学号
+          <input id="student-id" name="student_id" required autocomplete="off" placeholder="输入学号">
+        </label>
+        <label>周次
+          <select id="week" name="week"><option value="">全部周次</option></select>
+        </label>
+        <label>星期
+          <select id="day" name="day">
+            <option value="">全部星期</option>
+            <option>周一</option><option>周二</option><option>周三</option>
+            <option>周四</option><option>周五</option><option>周六</option><option>周日</option>
+          </select>
+        </label>
+        <button id="query-submit" type="submit">查询课表</button>
+      </div>
+    </form>
+    <section class="results">
+      <p id="status" role="status">请输入已配置的学号。</p>
+      <div class="table-wrap" id="schedule-table" tabindex="0" role="region" aria-label="查询结果" hidden>
+        <table>
+          <thead><tr><th>课程编号</th><th>课程名称</th><th>教师</th><th>教室</th><th>星期</th><th>节次</th><th>上课周</th></tr></thead>
+          <tbody id="course-list"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+  <script>
+    const form = document.querySelector('#query-form');
+    const studentInput = document.querySelector('#student-id');
+    const weekSelect = document.querySelector('#week');
+    const daySelect = document.querySelector('#day');
+    const status = document.querySelector('#status');
+    const submit = document.querySelector('#query-submit');
+    const scheduleTable = document.querySelector('#schedule-table');
+    const courseList = document.querySelector('#course-list');
+
+    for (let week = 1; week <= 20; week += 1) {
+      const option = document.createElement('option');
+      option.value = week;
+      option.textContent = `第 ${week} 周`;
+      weekSelect.append(option);
+    }
+
+    function cell(row, text) {
+      const element = document.createElement('td');
+      element.textContent = text;
+      row.append(element);
+    }
+
+    function render(courses) {
+      courseList.replaceChildren();
+      for (const course of courses) {
+        const row = document.createElement('tr');
+        cell(row, course.course_id);
+        cell(row, course.course_name);
+        cell(row, course.teacher);
+        cell(row, course.classroom);
+        cell(row, course.day);
+        cell(row, `${course.start_period}–${course.end_period} 节`);
+        cell(row, course.weeks.join('、'));
+        courseList.append(row);
+      }
+    }
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      if (submit.disabled) return;
+      const studentId = studentInput.value.trim();
+      if (!studentId) {
+        status.textContent = '请输入学号。';
+        status.className = 'error';
+        return;
+      }
+      const params = new URLSearchParams();
+      if (weekSelect.value) params.set('week', weekSelect.value);
+      if (daySelect.value) params.set('day', daySelect.value);
+      const query = params.toString();
+      status.textContent = '正在查询…';
+      status.className = '';
+      submit.disabled = true;
+      form.setAttribute('aria-busy', 'true');
+      scheduleTable.hidden = true;
+      try {
+        const response = await fetch(`/api/schedules/${encodeURIComponent(studentId)}${query ? `?${query}` : ''}`);
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error?.message || '查询失败');
+        render(data.courses);
+        scheduleTable.hidden = data.courses.length === 0;
+        status.textContent = data.courses.length ? `学号 ${data.student_id} · ${data.courses.length} 门课程` : '本次筛选没有课程。';
+      } catch (error) {
+        courseList.replaceChildren();
+        status.textContent = error.message;
+        status.className = 'error';
+      } finally {
+        submit.disabled = false;
+        form.removeAttribute('aria-busy');
+      }
+    });
+  </script>
+</body>
+</html>

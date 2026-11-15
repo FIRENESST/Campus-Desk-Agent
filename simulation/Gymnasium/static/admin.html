@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>健身房 · 运维管理台</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --accent: #2563eb;
+      --accent-soft: #eff4ff;
+      --ink: #14213d;
+      --muted: #64748b;
+      --line: #e2e8f0;
+      --bg: #f5f7fb;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: "Microsoft YaHei", system-ui, sans-serif;
+      line-height: 1.6;
+    }
+    .wrap { width: min(1080px, 92%); margin: 40px auto 64px; }
+    header { display: flex; flex-wrap: wrap; gap: 16px; justify-content: space-between; align-items: flex-end; margin-bottom: 24px; }
+    .eyebrow { margin: 0 0 6px; font-size: 12px; letter-spacing: .16em; color: var(--muted); }
+    h1 { margin: 0; font-size: 27px; }
+    .service { font: 13px/1.7 Consolas, monospace; color: var(--muted); text-align: right; }
+    .service a { color: var(--accent); text-decoration: none; }
+    .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 20px; }
+    .card { background: #fff; border: 1px solid var(--line); border-radius: 14px; padding: 16px 18px; }
+    .card span { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+    .card strong { font-size: 21px; font-variant-numeric: tabular-nums; }
+    .card strong.ok { color: #0f7b57; }
+    .card strong.bad { color: #b42318; }
+    .panel { background: #fff; border: 1px solid var(--line); border-radius: 14px; padding: 20px; margin-bottom: 18px; }
+    .panel h2 { margin: 0 0 4px; font-size: 17px; }
+    .panel .hint { margin: 0 0 16px; font-size: 13px; color: var(--muted); }
+    .endpoints { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; font: 13px/1.5 Consolas, monospace; }
+    .endpoints li { display: flex; gap: 12px; padding: 8px 12px; background: var(--bg); border-radius: 8px; }
+    .endpoints b { min-width: 48px; color: var(--accent); }
+    .endpoints span, td code { min-width: 0; overflow-wrap: anywhere; }
+    .table-overflow { max-width: 100%; overflow-x: auto; border: 1px solid var(--line); border-radius: 9px; }
+    :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+    .table-overflow:focus-visible { outline-offset: -2px; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { padding: 10px 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { font-size: 12px; letter-spacing: .08em; color: var(--muted); }
+    td { overflow-wrap: anywhere; }
+    tbody tr:nth-child(even) { background: var(--bg); }
+    td code { font: 12px/1.5 Consolas, monospace; }
+    details summary { cursor: pointer; color: var(--accent); font-size: 13px; }
+    details pre { margin: 8px 0 0; padding: 10px; background: var(--bg); border-radius: 8px; overflow: auto; font: 12px/1.6 Consolas, monospace; }
+    form { display: grid; gap: 12px; }
+    .row { display: grid; grid-template-columns: 200px 1fr; gap: 12px; align-items: start; }
+    label { font-size: 13px; font-weight: 600; padding-top: 10px; }
+    select, textarea { width: 100%; padding: 10px 12px; border: 1px solid #cbd5e1; border-radius: 8px; background: #fff; font: inherit; }
+    textarea { min-height: 120px; resize: vertical; font: 13px/1.6 Consolas, monospace; }
+    button { justify-self: start; padding: 10px 24px; border: 0; border-radius: 8px; background: var(--accent); color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+    button:disabled { opacity: .55; cursor: not-allowed; }
+    .result { margin-top: 16px; }
+    .result-head { display: flex; gap: 12px; align-items: center; margin-bottom: 8px; font-size: 13px; color: var(--muted); }
+    .badge { padding: 2px 10px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+    .badge.error { background: #fef3f2; color: #b42318; }
+    pre.output {
+      margin: 0;
+      padding: 14px;
+      min-height: 84px;
+      background: #0f172a;
+      color: #e2e8f0;
+      border-radius: 10px;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font: 12.5px/1.7 Consolas, monospace;
+    }
+    @media (max-width: 760px) {
+      .grid, .row { grid-template-columns: 1fr; }
+      .wrap { margin-top: 24px; }
+      .service { text-align: left; }
+      label { padding-top: 0; }
+      .panel { padding: 15px; }
+      .row { grid-template-columns: minmax(0, 1fr); }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div>
+        <p class="eyebrow">OPS CONSOLE</p>
+        <h1>健身房 · 运维管理台</h1>
+      </div>
+      <div class="service">
+        gymnasium / FastAPI + MCP<br>
+        <span id="origin">—</span> · <a href="./">返回业务页面</a>
+      </div>
+    </header>
+
+    <section class="grid" aria-label="服务状态">
+      <article class="card"><span>健康状态</span><strong id="health">检查中</strong></article>
+      <article class="card"><span>Agent 工具</span><strong id="tool-count">—</strong></article>
+      <article class="card"><span>监听地址</span><strong id="listen" style="font-size:15px">—</strong></article>
+    </section>
+
+    <section class="panel">
+      <h2>接口清单</h2>
+      <p class="hint">与 MintAGW 使用同一套后端契约，本页直接调用。</p>
+      <ul class="endpoints">
+        <li><b>GET</b><span>/healthz</span></li>
+        <li><b>GET</b><span>/agent/tools</span></li>
+        <li><b>POST</b><span>/agent/call</span></li>
+      </ul>
+    </section>
+
+    <section class="panel">
+      <h2>工具清单</h2>
+      <p class="hint">来自 /agent/tools，展开可查看参数 JSON Schema。</p>
+      <div class="table-overflow" tabindex="0" role="region" aria-label="工具清单">
+        <table>
+          <thead><tr><th scope="col">名称</th><th scope="col">描述</th><th scope="col">参数</th></tr></thead>
+          <tbody id="tools"><tr><td colspan="3">正在读取…</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>在线调用</h2>
+      <p class="hint">选择工具并提交 JSON 参数，结果直接来自 /agent/call。</p>
+      <form id="call-form">
+        <div class="row">
+          <label for="tool-select">工具</label>
+          <select id="tool-select" required></select>
+        </div>
+        <div class="row">
+          <label for="arguments">参数（JSON）</label>
+          <textarea id="arguments" spellcheck="false">{}</textarea>
+        </div>
+        <button id="run-button" type="submit">执行调用</button>
+      </form>
+      <div class="result" aria-live="polite">
+        <div class="result-head">
+          <span class="badge" id="status-badge">等待调用</span>
+          <span id="duration"></span>
+        </div>
+        <pre class="output" id="output">尚无调用记录。</pre>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    "use strict";
+    const health = document.querySelector("#health");
+    const toolCount = document.querySelector("#tool-count");
+    const toolBody = document.querySelector("#tools");
+    const toolSelect = document.querySelector("#tool-select");
+    const argumentInput = document.querySelector("#arguments");
+    const form = document.querySelector("#call-form");
+    const runButton = document.querySelector("#run-button");
+    const badge = document.querySelector("#status-badge");
+    const duration = document.querySelector("#duration");
+    const output = document.querySelector("#output");
+    let tools = [];
+
+    document.querySelector("#origin").textContent = location.host;
+    document.querySelector("#listen").textContent = location.host;
+
+    async function request(path, options) {
+      const started = performance.now();
+      const response = await fetch(path, options);
+      const text = await response.text();
+      let body;
+      try { body = JSON.parse(text); } catch { body = text; }
+      return { status: response.status, ok: response.ok, body, ms: Math.round(performance.now() - started) };
+    }
+
+    async function loadHealth() {
+      try {
+        const result = await request("healthz");
+        const healthy = result.ok && result.body && result.body.status === "ok";
+        health.textContent = healthy ? "正常" : "异常 " + result.status;
+        health.className = healthy ? "ok" : "bad";
+      } catch (error) {
+        health.textContent = "不可达";
+        health.className = "bad";
+      }
+    }
+
+    function exampleArguments(schema) {
+      const value = {};
+      for (const [key, property] of Object.entries(schema.properties || {})) {
+        if (property.type === "integer") value[key] = property.minimum ?? 1;
+        else if (property.type === "boolean") value[key] = false;
+        else if (Array.isArray(property.enum)) value[key] = property.enum[0];
+        else value[key] = "";
+      }
+      return JSON.stringify(value, null, 2);
+    }
+
+    function schemaCell(schema) {
+      const details = document.createElement("details");
+      const summary = document.createElement("summary");
+      summary.textContent = "查看 Schema";
+      const pre = document.createElement("pre");
+      pre.textContent = JSON.stringify(schema, null, 2);
+      details.append(summary, pre);
+      return details;
+    }
+
+    function fillTools() {
+      if (!tools.length) {
+        toolBody.innerHTML = "<tr><td colspan=\"3\">当前没有登记工具。</td></tr>";
+        toolSelect.replaceChildren(new Option("没有可用工具", ""));
+        runButton.disabled = true;
+        return;
+      }
+      toolBody.replaceChildren(...tools.map((tool) => {
+        const row = document.createElement("tr");
+        const name = document.createElement("td");
+        const code = document.createElement("code");
+        code.textContent = tool.name;
+        name.append(code);
+        const description = document.createElement("td");
+        description.textContent = tool.description || "—";
+        const parameters = document.createElement("td");
+        parameters.append(schemaCell(tool.parameters));
+        row.append(name, description, parameters);
+        return row;
+      }));
+      toolSelect.replaceChildren(...tools.map((tool) => new Option(tool.name, tool.name)));
+      fillArguments();
+      runButton.disabled = false;
+    }
+
+    function fillArguments() {
+      const selected = tools.find((tool) => tool.name === toolSelect.value) || tools[0];
+      argumentInput.value = selected ? exampleArguments(selected.parameters) : "{}";
+    }
+
+    async function loadTools() {
+      try {
+        const result = await request("agent/tools");
+        if (!result.ok || !Array.isArray(result.body.tools)) throw new Error("HTTP " + result.status);
+        tools = result.body.tools;
+        toolCount.textContent = String(tools.length);
+        fillTools();
+      } catch (error) {
+        toolBody.innerHTML = "<tr><td colspan=\"3\">工具清单读取失败，请确认服务状态。</td></tr>";
+        toolCount.textContent = "—";
+        runButton.disabled = true;
+      }
+    }
+
+    toolSelect.addEventListener("change", fillArguments);
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      let args;
+      try {
+        args = JSON.parse(argumentInput.value || "{}");
+      } catch {
+        badge.textContent = "参数不是合法 JSON";
+        badge.className = "badge error";
+        duration.textContent = "";
+        output.textContent = "请修正参数 JSON 后重试。";
+        return;
+      }
+      runButton.disabled = true;
+      badge.textContent = "调用中";
+      badge.className = "badge";
+      duration.textContent = "";
+      try {
+        const result = await request("agent/call", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: toolSelect.value, arguments: args }),
+        });
+        badge.textContent = "HTTP " + result.status;
+        badge.className = "badge" + (result.ok ? "" : " error");
+        duration.textContent = "耗时 " + result.ms + " ms";
+        output.textContent = typeof result.body === "string"
+          ? result.body
+          : JSON.stringify(result.body, null, 2);
+      } catch (error) {
+        badge.textContent = "请求失败";
+        badge.className = "badge error";
+        output.textContent = String(error);
+      } finally {
+        runButton.disabled = false;
+      }
+    });
+
+    loadHealth();
+    loadTools();
+  </script>
+</body>
+</html>

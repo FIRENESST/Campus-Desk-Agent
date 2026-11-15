@@ -1,0 +1,6 @@
+pgsql/
+data/
+logs/
+secrets/
+.env
+*.zip

@@ -1,0 +1,121 @@
+"""Review proposed campus actions before handing them to a specialist."""
+
+import asyncio
+import json
+import unicodedata
+from datetime import datetime
+
+from ..campus_cluster.action_plan import CAMPUS_TIME_ZONE, CampusActionPlan
+from ..campus_cluster.subskills.minta_campus import redact_classroom_contact
+from ..core import AgentError, Message
+from ..reliability.checks import review_findings
+from ..reliability.models import ReviewContext, Rule
+
+
+ACTION_INTENT_RULE = Rule(
+    "campus.action_plan",
+    "核对拟办动作、对象和参数是否符合用户本轮的明确委托或同一事项的补充。"
+    "把礼貌地请你帮忙办理的问句理解为委托，结合上下文区分发起办理与询问规则。"
+    "允许缺少待追问的字段。参数应来自用户消息，不能采用助手举的例子。"
+    "教室预约的时段以及体育馆预约的日期、场地号和时间可按北京时间规范化。核对与用户所选一致。"
+    "复用前文参数时，本轮必须明确接续同一事项。历史中的委托或确认不能代替本轮的意思。"
+    "用户只是咨询、转述、否认或说算了，未选择多项中的哪一项，或计划忽略了不支持的附加条件时，不通过。"
+    "这是提交前的计划，其中的动作、对象和参数不属于事实声明，claims 可留空。",
+)
+ACTION_CONFIRMATION_RULE = Rule(
+    "campus.action_confirmation",
+    "只判断本轮用户是否明确同意按 pending 中已展示的对象和条件提交。"
+    "pending.previous_reply_is_preview 为真表示上一条回复就是这笔待办的确认提示。"
+    "简短肯定只有在直接回应确认提示时才足以同意。中间切过话题时，用户必须明确接续这笔待办。"
+    "问句、闲聊、同意另一件事、否定、修改对象或附加条件都不能通过。此前的授权或确认也不能代替本轮。"
+    "候选内容是确认意图的判断，claims 可留空。",
+)
+CAMPUS_INTENT_TIMEOUT = 20.0
+
+
+def campus_action_turns(history):
+    """Yield the recorded campus workflow turns, newest first, skipping ordinary chat."""
+    for item in reversed(history):
+        if item["role"] == "user" and (
+            item.get("campus_action_turn") or item.get("classroom_pending") or item.get("pending_campus_action") is not None
+        ):
+            yield item
+
+
+def pending_campus_action(history) -> CampusActionPlan | None:
+    latest = next(campus_action_turns(history), None)
+    if latest is None or latest.get("pending_campus_action") is None:
+        return None
+    try:
+        return CampusActionPlan.model_validate(latest["pending_campus_action"])
+    except ValueError:
+        return None
+
+
+def last_answered_user(history):
+    if len(history) >= 2 and history[-2]["role"] == "user" and history[-1]["role"] == "assistant":
+        return history[-2]
+    return None
+
+
+def model_dialog_history(history) -> tuple[Message, ...]:
+    return tuple(Message(item["role"], redact_classroom_contact(item["content"], pending=True))
+                 for item in history if item["role"] in {"user", "assistant"})
+
+
+def _model_plan(plan: CampusActionPlan) -> dict:
+    proposal = plan.model_dump()
+    if plan.action == "classroom.start" and "phone" in proposal["arguments"]:
+        proposal["arguments"]["phone"] = "[电话已隐藏]"
+    return proposal
+
+
+def pending_confirmation_context(history, plan: CampusActionPlan | None) -> dict | None:
+    if plan is None:
+        return None
+    turn = next(campus_action_turns(history), None)
+    if turn is None:
+        return None
+    preview = turn.get("campus_action_reply")
+    direct_reply = last_answered_user(history) is turn and (preview is None or history[-1]["content"] == preview)
+    return {
+        "plan": _model_plan(plan),
+        "preview": redact_classroom_contact(preview, pending=True) if preview else None,
+        "previous_reply_is_preview": direct_reply,
+    }
+
+
+def plan_matches_message(plan: CampusActionPlan, query: str, history) -> bool:
+    messages = [item["content"] for item in history if item["role"] == "user"]
+    texts = [unicodedata.normalize("NFKC", redact_classroom_contact(content)) for content in (*messages, query)]
+    if plan.action in {"gym.start", "gym.close", "classroom.close"}:
+        # The model can normalize Chinese numerals, relative dates and clock times.
+        # The intent reviewer checks these against the source before a preview is created.
+        target = unicodedata.normalize("NFKC", plan.target)
+        return (not target and plan.action == "gym.start") or any(target and target in text for text in texts)
+    values = (plan.target, *plan.arguments.values())
+    return all(value and "[电话已隐藏]" not in value and
+               any(unicodedata.normalize("NFKC", value) in text for text in texts) for value in values)
+
+
+async def review_campus_action(reviewer, context, plan: CampusActionPlan, *, confirmation=None) -> bool:
+    classroom = plan.action == "classroom.start"
+    if confirmation is None:
+        rule, proposal = ACTION_INTENT_RULE, _model_plan(plan)
+    else:
+        rule, proposal = ACTION_CONFIRMATION_RULE, {"decision": "confirm", "pending": confirmation}
+    instruction = "请根据会话和最后一条用户消息，按所给规则审核这次校园办理意图。"
+    if confirmation is None and plan.action in {"gym.start", "gym.close", "classroom.start", "classroom.close"}:
+        instruction += f"今天是北京时间 {datetime.now(CAMPUS_TIME_ZONE):%Y-%m-%d}，按此日期理解本轮的相对时间。"
+    check = ReviewContext(
+        messages=(Message("system", instruction),
+                  *model_dialog_history(context.history),
+                  Message("user", redact_classroom_contact(context.query, pending=classroom))),
+        rules=(rule,), evidence=(),
+        answer=json.dumps(proposal, ensure_ascii=False),
+    )
+    try:
+        async with asyncio.timeout(CAMPUS_INTENT_TIMEOUT):
+            return not review_findings(check, await reviewer.review(check))
+    except (AgentError, TimeoutError, ValueError, RecursionError):
+        return False

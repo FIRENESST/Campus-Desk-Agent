@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="澄怀图书馆馆藏与借阅管理">
+  <title>澄怀图书馆 · 馆藏管理</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">跳至馆藏管理</a>
+  <div class="paper-grain" aria-hidden="true"></div>
+
+  <header class="masthead">
+    <div class="masthead-inner">
+      <div class="brand-line reveal">
+        <span class="seal" aria-hidden="true">藏</span>
+        <span>澄怀图书馆</span>
+        <span class="brand-divider" aria-hidden="true"></span>
+        <span class="brand-subtitle">馆藏管理处</span>
+      </div>
+      <div class="hero-grid">
+        <div class="hero-copy reveal delay-one">
+          <p class="eyebrow">THE ARCHIVE OF QUIET WONDERS</p>
+          <h1>纸上万象，<br><em>有序流藏。</em></h1>
+          <p class="intro">让每一册书都有来处，也有归途。于此查阅馆藏、登记借阅，并守护每一次纸页间的相遇。</p>
+        </div>
+        <dl class="ledger-summary reveal delay-two" aria-label="馆藏概要">
+          <div>
+            <dt>在册书目</dt>
+            <dd><span id="stat-books">—</span><small>种</small></dd>
+          </div>
+          <div>
+            <dt>当前可借</dt>
+            <dd><span id="stat-copies">—</span><small>册</small></dd>
+          </div>
+          <div>
+            <dt>流通记录</dt>
+            <dd><span id="stat-loans">—</span><small>笔</small></dd>
+          </div>
+        </dl>
+      </div>
+    </div>
+  </header>
+
+  <main id="main" class="main-shell">
+    <aside class="borrow-panel reveal delay-two" aria-labelledby="borrow-title">
+      <div class="panel-number" aria-hidden="true">借</div>
+      <p class="section-kicker">CIRCULATION DESK</p>
+      <h2 id="borrow-title">借阅登记</h2>
+      <p class="panel-intro">择一册心仪之书，留下读者姓名。归还时，书仍在这里等候下一位读者。</p>
+      <form id="borrow-form">
+        <label for="book-select">馆藏书籍</label>
+        <div class="select-wrap">
+          <select id="book-select" name="book_id" required>
+            <option value="">正在整理书目…</option>
+          </select>
+        </div>
+        <label for="borrower-name">读者姓名</label>
+        <input id="borrower-name" name="borrower_name" type="text" maxlength="100" autocomplete="name" placeholder="请输入借阅人姓名" required>
+        <button id="borrow-submit" class="primary-button" type="submit">
+          <span>登记借阅</span><span aria-hidden="true">→</span>
+        </button>
+      </form>
+      <p class="archive-note">请使用演示称呼。登记的称呼会显示在本页流通簿。</p>
+    </aside>
+
+    <section class="catalogue reveal delay-three" aria-labelledby="catalogue-title">
+      <div class="section-heading">
+        <div>
+          <p class="section-kicker">01 / COLLECTION</p>
+          <h2 id="catalogue-title">馆藏目录</h2>
+        </div>
+        <button id="refresh-button" class="text-button" type="button"><span aria-hidden="true">↻</span> 刷新簿册</button>
+      </div>
+      <div class="table-wrap" tabindex="0" role="region" aria-labelledby="catalogue-title">
+        <table class="data-table">
+          <thead>
+            <tr><th>编号</th><th>书名</th><th>著者</th><th>副本</th><th>状态</th></tr>
+          </thead>
+          <tbody id="books-body">
+            <tr class="loading-row"><td colspan="5">正在展开馆藏目录…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="loans-section reveal delay-three" aria-labelledby="loans-title">
+      <div class="section-heading">
+        <div>
+          <p class="section-kicker">02 / ON LOAN</p>
+          <h2 id="loans-title">流通簿 <span class="heading-aside">· 当前借阅与归还</span></h2>
+        </div>
+        <span class="ink-note">按借阅编号归还</span>
+      </div>
+      <div id="loans-empty" class="empty-state" hidden>
+        <span aria-hidden="true">卷</span>
+        <p>此刻所有书卷均已在架。</p>
+      </div>
+      <div id="loans-table-wrap" class="table-wrap" tabindex="0" role="region" aria-labelledby="loans-title" hidden>
+        <table class="data-table loans-table">
+          <thead>
+            <tr><th>借阅编号</th><th>书名</th><th>读者</th><th>操作</th></tr>
+          </thead>
+          <tbody id="loans-body"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <span>澄怀图书馆 · 本地馆藏模拟</span>
+    <span>页面与 Agent 共用同一份内存簿册</span>
+  </footer>
+
+  <div id="notice" class="notice" role="status" aria-live="polite" aria-atomic="true"></div>
+</body>
+</html>

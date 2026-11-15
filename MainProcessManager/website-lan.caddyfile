@@ -1,0 +1,28 @@
+{
+	admin off
+	auto_https disable_redirects
+	skip_install_trust
+	servers {
+		protocols h1 h2
+	}
+}
+
+import cas-public.caddyfile
+
+https://{$MPM_LAN_ADDRESS}:{$MPM_LAN_PORT} {
+	bind {$MPM_LAN_ADDRESS}
+	tls internal
+	@outside not remote_ip private_ranges
+	respond @outside 403
+	reverse_proxy 127.0.0.1:{$MPM_LAN_BACKEND_PORT}
+}
+
+https://{$MPM_LAN_ADDRESS}:{$MPM_LAN_CAS_PORT} {
+	bind {$MPM_LAN_ADDRESS}
+	tls internal
+	@outside not remote_ip private_ranges
+	route {
+		respond @outside 403
+		import cas_public {$MPM_LAN_CAS_ORIGIN} {remote_host}
+	}
+}

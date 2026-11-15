@@ -1,0 +1,11 @@
+pymilvus==3.0.2
+milvus-lite==3.2.2
+httpx2>=2.16,<3
+pypdf>=6,<7
+python-docx>=1.2,<2
+numpy>=2,<3
+onnxruntime>=1.26,<2
+tokenizers>=0.22,<1
+filelock>=3.20,<5
+starlette>=0.48,<2
+uvicorn>=0.31.1,<1
