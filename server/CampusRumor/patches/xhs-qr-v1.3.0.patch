@@ -1,0 +1,308 @@
+diff --git a/xhs_client.py b/xhs_client.py
+--- a/xhs_client.py
++++ b/xhs_client.py
+@@ -15,34 +15,85 @@
+ from app.core.storage import atomic_write, https_url
+ 
+ ORIGIN = "https://www.xiaohongshu.com"
++REDNOTE = "www.rednote.com"
++OFFICIAL_HOSTS = {"www.xiaohongshu.com", REDNOTE}
+ PROFILE = RUNTIME_DIR / "xhs-profile"
+ QR = XHS_DIR / "login_qr.png"
+-USER_SELECTOR = ".side-bar .user a[href*='/user/profile/'], .side-bar a[href*='/user/profile/']"
++ACCOUNT_SELECTOR = (
++    ".side-bar a[href*='/user/profile/']:visible, aside a[href*='/user/profile/']:visible, "
++    "nav a[href*='/user/profile/']:visible"
++)
++QR_SELECTOR = ".login-container img[src*='qrcode']:visible, img.qrcode-img:visible, .login-container canvas:visible"
++QR_EXPIRED = re.compile(r"二维码(?:已)?(?:过期|失效)|QR code (?:has )?expired", re.I)
++SCAN_CONFIRMED = re.compile(r"已扫码|扫码成功|请在(?:手机(?:上|端)?|小红书(?:App)?)确认(?:登录)?|Confirm (?:on|in) (?:your phone|the app)", re.I)
+ 
+ 
+ def signed_in(page) -> bool:
+-    return urlsplit(page.url).hostname == "www.xiaohongshu.com" and page.locator(USER_SELECTOR).first.is_visible()
++    address = urlsplit(page.url)
++    return (address.scheme == "https" and address.netloc in OFFICIAL_HOSTS
++            and page.locator(ACCOUNT_SELECTOR).first.is_visible())
++
++
++def _open_login(page):
++    page.goto(ORIGIN + "/explore", wait_until="domcontentloaded", timeout=25000)
++    if signed_in(page):
++        return
++    address = urlsplit(page.url)
++    if address.scheme != "https" or address.netloc not in OFFICIAL_HOSTS:
++        raise ValueError("小红书登录页域名无效")
++    if address.netloc == REDNOTE:
++        page.goto(f"https://{REDNOTE}/login", wait_until="domcontentloaded", timeout=15000)
++    elif not page.locator(QR_SELECTOR).first.is_visible():
++        button = page.get_by_text("登录", exact=True).first
++        if button.is_visible():
++            button.click(timeout=5000)
+ 
+ 
+ def login(page):
+-    page.goto(ORIGIN + "/explore", wait_until="domcontentloaded", timeout=25000)
+-    if signed_in(page):
+-        return {"logged_in": True}
+-    button = page.get_by_text("登录", exact=True).first
+-    if button.is_visible():
+-        button.click(timeout=5000)
+-    qr = page.locator(".login-container img[src*='qrcode'], img.qrcode-img, .login-container canvas").first
+-    qr.wait_for(state="visible", timeout=12000)
+-    atomic_write(QR, qr.screenshot(timeout=5000))
++    _open_login(page)
++    panel = page.locator(".login-container:visible").first
++    qr = page.locator(QR_SELECTOR).first
++    rendered = None
++    phase = "loading"
+     deadline = time.monotonic() + 180
++    opening_deadline = time.monotonic() + 12
+     try:
+         while time.monotonic() < deadline:
+             if signed_in(page):
+                 return {"logged_in": True}
+-            page.wait_for_timeout(2000)
++            address = urlsplit(page.url)
++            if address.scheme != "https" or address.netloc not in OFFICIAL_HOSTS:
++                return {"logged_in": False, "phase": "failed"}
++            visible = panel.inner_text(timeout=2000) if panel.is_visible() else ""
++            if QR_EXPIRED.search(visible):
++                return {"logged_in": False, "phase": "expired"}
++            if SCAN_CONFIRMED.search(visible):
++                opening_deadline = deadline
++                next_phase = "waiting_confirmation"
++                if rendered is not None:
++                    QR.unlink(missing_ok=True)
++                    rendered = None
++            elif qr.is_visible():
++                opening_deadline = deadline
++                image = qr.screenshot(timeout=2500)
++                if image != rendered:
++                    atomic_write(QR, image)
++                    rendered = image
++                next_phase = "waiting_scan"
++            else:
++                if rendered is not None:
++                    QR.unlink(missing_ok=True)
++                    rendered = None
++                if phase == "loading" and time.monotonic() >= opening_deadline:
++                    return {"logged_in": False, "phase": "failed"}
++                next_phase = phase if phase == "waiting_confirmation" else "loading"
++            if phase != next_phase:
++                phase = next_phase
++                print(json.dumps({"phase": phase}), flush=True)
++            page.wait_for_timeout(1500)
+     finally:
+         QR.unlink(missing_ok=True)
+-    return {"logged_in": False}
++    return {"logged_in": False, "phase": "timeout"}
+ 
+ 
+ def search(page, keyword: str, limit: int):
+@@ -59,14 +110,15 @@
+     )
+     items = {}
+     for entry in links:
+-        url = https_url(urljoin(ORIGIN, entry["href"] or ""))
++        url = https_url(urljoin(page.url, entry["href"] or ""))
+         if not url:
+             continue
+         parsed = urlsplit(url)
+         match = re.fullmatch(r"/(?:explore|search_result)/([a-f0-9]{16,})", parsed.path)
+         lines = entry["text"].splitlines()
+-        if parsed.hostname != "www.xiaohongshu.com" or not match or not lines:
++        if parsed.netloc not in OFFICIAL_HOSTS or not match or not lines:
+             continue
++        url = parsed._replace(netloc="www.xiaohongshu.com").geturl()
+         items.setdefault(match[1], {"url": url, "title": lines[0][:150], "text": " ".join(lines)[:240]})
+         if len(items) >= limit:
+             break
+@@ -111,8 +163,10 @@
+                     result = search(page, args.search.strip(), args.limit)
+             finally:
+                 context.close()
+-    except (Error, OSError, Timeout) as exc:
++    except (Error, OSError, Timeout, ValueError) as exc:
+         print(f"小红书操作未完成：{type(exc).__name__}", file=sys.stderr)
++        if args.login:
++            print(json.dumps({"logged_in": False, "phase": "failed"}), flush=True)
+         return 1
+     print(json.dumps(result, ensure_ascii=False))
+     return 0 if result.get("ok") or result.get("logged_in") else 1
+diff --git a/app/core/xhs.py b/app/core/xhs.py
+--- a/app/core/xhs.py
++++ b/app/core/xhs.py
+@@ -12,11 +12,16 @@
+ from app.core.storage import https_url, private_file
+ 
+ 
++RUNNING_PHASES = {"loading", "waiting_scan", "waiting_confirmation"}
++FAILURE_PHASES = {"expired", "timeout", "failed"}
++
++
+ class Bridge:
+     def __init__(self):
+         self.lock = threading.Lock()
+         self.process = None
+         self.logged_in = False
++        self.login_failure = None
+         self.searching = False
+ 
+     def _require(self):
+@@ -35,18 +40,46 @@
+                 "TMP": str(TMP_DIR), "TEMP": str(TMP_DIR), "TMPDIR": str(TMP_DIR),
+                 "PLAYWRIGHT_BROWSERS_PATH": str(RUNTIME_DIR / "browsers")}
+ 
++    @staticmethod
++    def _login_phase(phases):
++        try:
++            with (RUNTIME_DIR / "xhs-login.log").open("rb") as log:
++                log.seek(max(0, log.seek(0, os.SEEK_END) - 4096))
++                for line in reversed(log.read().splitlines()):
++                    try:
++                        result = json.loads(line)
++                    except (ValueError, RecursionError):
++                        continue
++                    phase = result.get("phase") if isinstance(result, dict) else None
++                    if isinstance(phase, str) and phase in phases:
++                        return phase
++        except OSError:
++            pass
++        return None
++
+     def _reap(self):
+         if self.process is not None and self.process.poll() is not None:
+             self.logged_in = self.process.returncode == 0
++            self.login_failure = None if self.logged_in else self._login_phase(FAILURE_PHASES) or "failed"
+             self.process = None
+             (XHS_DIR / "login_qr.png").unlink(missing_ok=True)
+ 
+     def status(self):
+         with self.lock:
+             self._reap()
+-            return {"enabled": ENABLE_XHS, "logged_in": self.logged_in,
+-                    "login_running": self.process is not None, "searching": self.searching,
+-                    "qr_ready": self.process is not None and (XHS_DIR / "login_qr.png").is_file()}
++            running = self.process is not None
++            version = None
++            if running:
++                try:
++                    version = str((XHS_DIR / "login_qr.png").stat().st_mtime_ns)
++                except FileNotFoundError:
++                    pass
++                phase = self._login_phase(RUNNING_PHASES) or ("waiting_scan" if version else "loading")
++            else:
++                phase = "authorized" if self.logged_in else self.login_failure or "idle"
++            return {"enabled": ENABLE_XHS, "logged_in": self.logged_in, "login_running": running,
++                    "searching": self.searching, "qr_ready": version is not None, "qr_version": version,
++                    "login_phase": phase}
+ 
+     def login(self):
+         self._require()
+@@ -56,6 +89,7 @@
+                 raise HTTPException(409, "浏览器正在执行任务")
+             (XHS_DIR / "login_qr.png").unlink(missing_ok=True)
+             self.logged_in = False
++            self.login_failure = None
+             with (RUNTIME_DIR / "xhs-login.log").open("wb") as log:
+                 self.process = subprocess.Popen(self._command("--login"), stdout=log, stderr=log,
+                                                 cwd=ROOT, env=self._env())
+diff --git a/app/web/static/radar.js b/app/web/static/radar.js
+--- a/app/web/static/radar.js
++++ b/app/web/static/radar.js
+@@ -4,43 +4,70 @@
+ const xhsStatus = site.byId("xhsStatus");
+ const xhsMessage = site.byId("xhsMessage");
+ const xhsQr = site.byId("xhsQr");
++const xhsLogin = site.byId("xhsLogin");
++const phaseLabels = {
++  idle: "未确认授权状态",
++  loading: "正在生成登录二维码…",
++  waiting_scan: "请打开小红书 App 扫码，并在手机上确认登录",
++  waiting_confirmation: "已扫码，请在手机上确认登录",
++  expired: "二维码已过期，请重新生成",
++  timeout: "本轮扫码超时，请重新生成二维码",
++  failed: "小红书登录页暂不可用，请重试",
++  authorized: "小红书登录成功",
++};
++let qrVersion = null;
+ 
+ async function refreshXhs() {
+   const info = await site.call("/api/xhs_status");
+-  xhsStatus.textContent = info.login_running ? "等待授权扫码" : info.logged_in ? "最近操作已授权" : "未确认授权状态";
+-  if (xhsQr && info.qr_ready && xhsQr.hidden) {
+-    xhsQr.src = "/api/xhs_qr?t=" + Date.now();
+-    xhsQr.hidden = false;
++  const phase = info.login_phase || (info.logged_in ? "authorized" : info.login_running ? "waiting_scan" : "idle");
++  xhsStatus.textContent = phaseLabels[phase] || phaseLabels.idle;
++  if (xhsLogin) {
++    xhsLogin.textContent = ["expired", "timeout", "failed"].includes(phase) ? "重新生成二维码" : "开始授权扫码";
+   }
+-  if (xhsQr && !info.login_running) {
+-    xhsQr.hidden = true;
+-    xhsQr.removeAttribute("src");
++  if (xhsQr) {
++    if (info.login_running && info.qr_ready) {
++      const version = info.qr_version || "initial";
++      if (qrVersion !== version || xhsQr.hidden) {
++        xhsQr.src = "/api/xhs_qr?v=" + encodeURIComponent(version);
++        xhsQr.hidden = false;
++        qrVersion = version;
++      }
++    } else if (qrVersion !== null) {
++      xhsQr.hidden = true;
++      xhsQr.removeAttribute("src");
++      qrVersion = null;
++    }
+   }
+   return info;
+ }
+ 
++async function trackXhsLogin() {
++  if (xhsLogin) xhsLogin.disabled = true;
++  try {
++    let info = await refreshXhs();
++    while (info.login_running) {
++      await new Promise(resolve => setTimeout(resolve, 2000));
++      info = await refreshXhs();
++    }
++  } finally {
++    if (xhsLogin) xhsLogin.disabled = false;
++  }
++}
++
+ if (xhsSearch) {
+-  refreshXhs().catch(error => { xhsStatus.textContent = error.message; });
+-  site.byId("xhsLogin")?.addEventListener("click", async event => {
+-    const button = event.currentTarget;
+-    button.disabled = true;
++  xhsQr?.addEventListener("error", () => { xhsQr.hidden = true; });
++  trackXhsLogin().catch(error => { xhsStatus.textContent = error.message; });
++  xhsLogin?.addEventListener("click", async () => {
++    xhsLogin.disabled = true;
++    xhsMessage.textContent = "";
++    xhsStatus.textContent = phaseLabels.loading;
+     try {
+       await site.call("/api/xhs_login", {method: "POST"});
+-      xhsMessage.textContent = "等待生成二维码…";
+-      for (let poll = 0; poll < 95; poll += 1) {
+-        await new Promise(resolve => setTimeout(resolve, 3000));
+-        const info = await refreshXhs();
+-        if (!info.login_running) {
+-          xhsMessage.textContent = info.logged_in ? "授权状态已确认" : "授权未完成，请重试";
+-          return;
+-        }
+-        if (info.qr_ready) xhsMessage.textContent = "请用授权账号扫码";
+-      }
+-      xhsMessage.textContent = "等待扫码超时";
++      await trackXhsLogin();
+     } catch (error) {
+-      xhsMessage.textContent = error.message;
++      xhsStatus.textContent = error.message;
+     } finally {
+-      button.disabled = false;
++      xhsLogin.disabled = false;
+     }
+   });
+   xhsSearch.addEventListener("submit", async event => {
