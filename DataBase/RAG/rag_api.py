@@ -84,7 +84,7 @@ async def _search(request: Request) -> JSONResponse:
         return _error(str(exc), 422)
     except EmbeddingError as exc:
         return _error(str(exc), 503)
-    return await _database_query({"vector": vector, "scope": scope, "top_k": top_k}, "hits")
+    return await _database_query({"vector": vector, "query": query, "scope": scope, "top_k": top_k}, "hits")
 
 
 def _embed_routing_texts(texts: list[str]) -> list[list[float] | None]:
@@ -154,7 +154,7 @@ def _worker_main() -> None:
                 result = {"scopes": database.list_scopes()}
             else:
                 result = {"hits": database._search_project_vector(
-                    request["vector"], scope=request["scope"], top_k=request["top_k"]
+                    request["vector"], scope=request["scope"], top_k=request["top_k"], query=request.get("query"),
                 )}
     except RagError as exc:
         result = {"error": str(exc)}

@@ -12,9 +12,13 @@ from ..skills import Skill, SkillContext, SkillInput
 
 
 class CampusDigestInput(SkillInput):
-    query: Annotated[str, StringConstraints(strip_whitespace=True, max_length=200)] = ""
-    source: Literal["all", "web", "wechat"] = "all"
-    days: int = Field(default=30, ge=0, le=36_500, description="近几天，0 表示不限时间")
+    query: Annotated[str, StringConstraints(strip_whitespace=True, max_length=200)] = Field(
+        default="", description="把事项写成少量检索词，以空格分隔。每个词都须有命中。留空列出通知。",
+    )
+    source: Literal["all", "web", "wechat"] = Field(
+        default="all", description="web 仅查校官网，wechat 仅查公众号，all 同时查两者。",
+    )
+    days: int = Field(default=30, ge=0, le=36_500, description="按发布日期查近多少天。查历史年份时用 0，再核对发布年份。")
     limit: int = Field(default=6, ge=1, le=8)
 
 
@@ -51,13 +55,14 @@ async def search_campus_digest(_context: SkillContext, args: CampusDigestInput) 
         result = await search_digest(q=args.query, source=args.source, days=args.days, limit=args.limit)
     except (httpx2.HTTPError, httpx2.InvalidURL, ValueError, RecursionError):
         return ToolResult("校园日报暂时无法检索。", "error")
-    return ToolResult(json.dumps(result, ensure_ascii=False, separators=(",", ":")), "success")
+    reuse_for = 10 if result["items"] and result.get("stale") is False else 0
+    return ToolResult(json.dumps(result, ensure_ascii=False, separators=(",", ":")), "success", reuse_for=reuse_for)
 
 
 CAMPUS_DIGEST = Skill(
     "search_campus_digest",
-    "查询中国传媒大学官网和微信公众号收录的通知、加分活动、讲座和报名消息。"
-    "用简短关键词搜索，或留空查看近期条目。返回发布日、来源及可用原文链接。"
+    "从校官网和公众号索引定位有发布日期的通知、活动和报名公告。"
+    "返回摘要、发布日、来源及可用的原文链接。公众号名录、正文关键词或整篇原文用 campus_wechat_articles。"
     "发布日期指文章发布，举办时间和报名截止以原文为准。stale 为 true 时说明索引可能尚未更新。",
     CampusDigestInput, search_campus_digest, read_only=True,
 )

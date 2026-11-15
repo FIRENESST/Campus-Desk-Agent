@@ -1,6 +1,7 @@
 """Per-run tool receipts and optional checks at the execution boundary."""
 
 import json
+import time
 from collections import deque
 from collections.abc import Awaitable, Callable
 from copy import deepcopy
@@ -64,6 +65,7 @@ class RecordingTools:
         self._names: set[str] = set()
         self._prepared: deque[tuple[ToolCall, str]] = deque()
         self._call_ids: set[str] = set()
+        self._reusable: dict[tuple[str, str], tuple[float, Evidence]] = {}
 
     async def list_tools(self) -> list[ToolSpec]:
         tools = deepcopy(await self.client.list_tools())
@@ -108,6 +110,16 @@ class RecordingTools:
         call, expected_arguments = self._prepared.popleft()
         if call.name != name or arguments_json != expected_arguments:
             raise ReliabilityError("实际工具调用与预检内容不一致")
+        key = (name, arguments_json)
+        if (cached := self._reusable.get(key)) is not None:
+            deadline, evidence = cached
+            if (time.monotonic() < deadline
+                    and (evidence.expires_at is None or time.time() < evidence.expires_at)):
+                if self.runtime is not None:
+                    self.runtime.event("tool.reused", name)
+                return json.dumps({"reused_tool_call_id": evidence.call_id,
+                                   "message": "相同参数已检索，请使用该调用的原始结果与来源。"}, ensure_ascii=False)
+            del self._reusable[key]
         original_arguments = deepcopy(arguments)
         index = self.runtime.start_tool(call.id, name, arguments_json) if self.runtime else None
         try:
@@ -130,6 +142,11 @@ class RecordingTools:
                 raise
             self.runtime.finish_tool(index, outcome=result.status, evidence_id=item.id)
         self.evidence.append(item)
+        if result.status == "success" and result.reuse_for > 0:
+            self._reusable[key] = (time.monotonic() + result.reuse_for, item)
+        else:
+            # A write or a tool with unknown semantics can make previous reads obsolete.
+            self._reusable.clear()
         return result.content
 
     def _interpret(self, name: str, arguments: dict[str, Any], result) -> ToolResult:

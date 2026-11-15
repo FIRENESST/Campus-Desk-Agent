@@ -215,6 +215,7 @@ class SkillTests(unittest.IsolatedAsyncioTestCase):
         task = AgentTask("chat", "search", profile, "学生请假规定")
         model = ScriptModel(Message("assistant", tool_calls=[
             ToolCall("lookup", "search_rag", {"query": " 学生请假规定 "}),
+            ToolCall("lookup-repeat", "search_rag", {"query": " 学生请假规定 "}),
         ]), Message("assistant", "根据《学生手册》，请假须事先申请。"))
         with patch("main_agent.mcp_tools.connect_main_agent_mcp", mcp):
             with self.assertRaises(InvalidDraftError):

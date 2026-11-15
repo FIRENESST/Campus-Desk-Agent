@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from urllib.parse import urlencode
 
 from server.CampusDigest.index import MAX_ITEMS, DigestIndex, _item
-from server.CampusDigest.managed import _filters, _jobs, _runner, _wechat_filters
+from server.CampusDigest.managed import _filters, _handler, _jobs, _runner, _wechat_filters
 
 
 class DigestAPI:
@@ -19,7 +19,7 @@ class DigestAPI:
         self.calls = 0
         self.items = [{
             "title": "校园讲座通知", "date": "2026-11-10", "kind": "官网", "account": "教务处",
-            "url": "https://www.cuc.edu.cn/lecture", "excerpt": "线下报名说明",
+            "url": "https://campus.example.test/lecture", "excerpt": "线下报名说明",
             "insight": {"截止": "11 月 13 日 18:00"}, "links": ["https://private.example.test/signup"],
         }]
         self.official = [{
@@ -40,6 +40,56 @@ class DigestAPI:
 
 
 class DigestIndexTests(unittest.TestCase):
+    def test_tool_search_ranks_title_before_metadata_and_body_matches(self):
+        directory = Path(self.enterContext(TemporaryDirectory()))
+        api = DigestAPI()
+        api.items = [{
+            "title": "新生报到须知", "date": "2026-11-10", "kind": "官网",
+            "url": "https://campus.example.test/registration",
+        }, {
+            "title": "学院周报", "date": "2026-11-11", "kind": "官网", "excerpt": "回顾新生报到",
+        }]
+        api.official = [{
+            "title": "新生报到通知", "time": "2026-11-10 08:00", "official_name": "学生会",
+            "link": "https://mp.weixin.qq.com/s/registration",
+        }, {
+            "title": "学生会周报", "time": "2026-11-12 08:00", "official_name": "学生会",
+        }]
+
+        class TestHandlerBase:
+            def _json(self, status, data):
+                self.status = status
+                return data
+
+        path = directory / "digest.sqlite3"
+        index = DigestIndex(directory, path, api)
+        feed = index.read(**_wechat_filters("account=学生会"))
+        report, announcement = feed["items"]
+        index.save_article_body(report["id"], "请在新生报到时携带报名凭证。", "collected_article", None)
+
+        with closing(sqlite3.connect(path)) as db, db:
+            db.execute("DROP INDEX digest_item_by_source_date")
+            db.execute("DROP INDEX digest_wechat_by_publisher")
+        index = DigestIndex(directory, path, api)
+        handler = _handler(TestHandlerBase, index, None, "", None)()
+        handler.path = "/api/campus-desk/search?" + urlencode({"source": "web", "q": "新生 报到", "days": 0, "limit": 1})
+        website_search = handler.do_GET()
+        self.assertEqual(handler.status, 200)
+        self.assertEqual(website_search["items"][0]["url"], "https://campus.example.test/registration")
+        self.assertTrue(website_search["has_more"])
+
+        handler.path = "/api/campus-desk/search?" + urlencode({"source": "wechat", "q": "新生 报到", "days": 0})
+        wechat_search = handler.do_GET()
+        self.assertEqual(handler.status, 200)
+        self.assertEqual([row["id"] for row in wechat_search["items"]], [announcement["id"], report["id"]])
+        self.assertIn("报名凭证", wechat_search["items"][1]["body_excerpt"])
+        self.assertEqual(wechat_search["body_coverage"], {"indexed": 1, "total": 2})
+        accounts = index.wechat_accounts(query="学生会")
+        self.assertEqual(accounts["accounts"], [{"id": report["account_id"], "name": "学生会"}])
+        new_feed = index.read(**_wechat_filters("account=学生会"))
+        self.assertEqual([row["id"] for row in new_feed["items"]], [report["id"], announcement["id"]])
+        self.assertEqual(new_feed["revision"], feed["revision"])
+
     def test_wechat_accounts_followed_order_and_article_body_search(self):
         directory = Path(self.enterContext(TemporaryDirectory()))
         (directory / "config").mkdir()
@@ -139,7 +189,7 @@ class DigestIndexTests(unittest.TestCase):
         item, = first["items"]
         self.assertEqual(first["revision"]["version"], 1)
         self.assertEqual((item["publisher"], item["url"], item["registration_deadline"]),
-                         ("教务处", "https://www.cuc.edu.cn/lecture", "11 月 13 日 18:00"))
+                         ("教务处", "https://campus.example.test/lecture", "11 月 13 日 18:00"))
         self.assertNotIn("private.example.test", json.dumps(first))
         calls = api.calls
         self.assertEqual(index.read(query="招募", days=0, source="wechat")["items"][0]["source_id"],

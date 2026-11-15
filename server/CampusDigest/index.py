@@ -8,6 +8,7 @@ import sqlite3
 import unicodedata
 from contextlib import closing
 from datetime import date, datetime, timedelta, timezone
+from functools import lru_cache
 from threading import Condition
 from urllib.parse import parse_qs, urlencode, urlsplit
 
@@ -23,6 +24,7 @@ UNAVAILABLE_ARTICLE = {"文章已被删除", "该内容已被发布者删除", "
 ARTICLE_CHALLENGE = re.compile(r"访问过于频繁|操作频繁|环境异常|登录超时|请使用微信.*打开|微信公众平台安全验证")
 _BEIJING_TIME = timezone(timedelta(hours=8))
 _ORDER = "published_on DESC, published_at DESC, id"
+_RELEVANCE_CANDIDATES = 64
 _PUBLIC_COLUMNS = "id,source,title,publisher,published_on,published_at,url,source_id,excerpt,registration_deadline"
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS digest_revision (
@@ -61,6 +63,7 @@ def _account_key(value):
     return " ".join(_normalize(value).split())
 
 
+@lru_cache(maxsize=256)
 def _account_id(name):
     return hashlib.sha256(_account_key(name).encode()).hexdigest() if name else None
 
@@ -371,6 +374,13 @@ def _body_excerpt(text, terms):
     return ("…" if start else "") + _text(text[start:start + 300], 300) + ("…" if start + 300 < len(text) else "")
 
 
+def _search_relevance(title, search_text, terms):
+    normalized_title = _normalize(title)
+    title_hits = sum(term in normalized_title for term in terms)
+    metadata_hits = sum(term in search_text for term in terms)
+    return 2 * title_hits + metadata_hits
+
+
 class DigestIndex:
     def __init__(self, directory, path, api):
         self.directory, self.path, self.api = directory, path, api
@@ -388,6 +398,8 @@ class DigestIndex:
                     db.execute("ALTER TABLE digest_item ADD COLUMN published_at TEXT")
                 db.execute("UPDATE digest_revision SET source_stamp='' WHERE singleton=1")
             db.execute(f"CREATE INDEX IF NOT EXISTS digest_item_by_date ON digest_item({_ORDER})")
+            db.execute(f"CREATE INDEX IF NOT EXISTS digest_item_by_source_date ON digest_item(source,{_ORDER})")
+            db.execute("CREATE INDEX IF NOT EXISTS digest_wechat_by_publisher ON digest_item(publisher) WHERE source='wechat'")
             revision = db.execute("SELECT version FROM digest_revision WHERE singleton=1").fetchone()
             self._version = revision["version"] if revision else 0
 
@@ -503,7 +515,9 @@ class DigestIndex:
             rows = db.execute("""
                 WITH seen AS (
                     SELECT id,name FROM digest_wechat_account
-                    UNION ALL SELECT wechat_account_id(publisher),publisher FROM digest_item WHERE source='wechat' AND publisher<>''
+                    UNION ALL SELECT wechat_account_id(publisher),publisher FROM (
+                        SELECT DISTINCT publisher FROM digest_item WHERE source='wechat' AND publisher<>''
+                    )
                 )
                 SELECT id,min(name) AS name FROM seen WHERE (?='' OR id=?) AND instr(normalize_title(name),?)>0
                 GROUP BY id ORDER BY name,id LIMIT ? OFFSET ?
@@ -527,7 +541,8 @@ class DigestIndex:
                 AND NOT EXISTS (SELECT 1 FROM digest_wechat_body WHERE article_id=id) ORDER BY {_ORDER}
             """).fetchall()
 
-    def read(self, *, query=None, source="all", days=30, limit=6, account="", title="", url="", body="", offset=0, followed=()):
+    def read(self, *, query=None, source="all", days=30, limit=6, account="", title="", url="", body="", offset=0,
+             followed=(), relevance=False):
         fresh = self.refresh()
         with closing(self._connect()) as db, db:
             db.execute("BEGIN")
@@ -549,6 +564,9 @@ class DigestIndex:
             if name := _account_key(account):
                 conditions.append("instr(publisher_search,?)>0")
                 params.append(name)
+            for term in dict.fromkeys(_normalize(title).split()):
+                conditions.append("instr(normalize_title(title),?)>0")
+                params.append(term)
             if url:
                 if source == "wechat":
                     conditions.append("(article_url_key(COALESCE(url,''))=? OR article_url_key(COALESCE(canonical_url,''))=?)")
@@ -568,27 +586,42 @@ class DigestIndex:
             for term in body_terms:
                 conditions.append("instr(search_body,?)>0")
                 params.append(term)
-            for term in dict.fromkeys(_normalize(title).split()):
-                conditions.append("instr(normalize_title(title),?)>0")
-                params.append(term)
-            where = " WHERE " + " AND ".join(conditions) if conditions else ""
+            relation = "digest_item"
             if source == "wechat":
+                relation += " LEFT JOIN digest_wechat_body ON id=article_id"
+            where = " WHERE " + " AND ".join(conditions) if conditions else ""
+            order = _ORDER
+            if relevance and terms:
+                db.create_function("digest_relevance", 2, lambda title, text: _search_relevance(title, text, terms),
+                                   deterministic=True)
+                order = f"digest_relevance(title,search_text) DESC,{order}"
+                if not followed:
+                    candidates = f"SELECT id FROM {relation}{where} ORDER BY {_ORDER} LIMIT ?"
+                    where = f" WHERE id IN ({candidates})"
+                    params.append(max(_RELEVANCE_CANDIDATES, limit + offset + 1))
+            if source == "wechat":
+                following = "0"
+                follow_params = ()
+                if followed:
+                    following = "COALESCE(wechat_account_id(publisher) IN (SELECT value FROM json_each(?)),0)"
+                    follow_params = (json.dumps(followed),)
+                    order = f"followed DESC,{order}"
                 excerpts = ",content AS indexed_body,search_body" if terms or body_terms else ""
                 rows = db.execute(f"""
                     SELECT {_PUBLIC_COLUMNS},wechat_account_id(publisher) AS account_id, content_source,
-                           COALESCE(wechat_account_id(publisher) IN (SELECT value FROM json_each(?)),0) AS followed,
-                           canonical_url{excerpts}
-                    FROM digest_item LEFT JOIN digest_wechat_body ON id=article_id{where}
-                    ORDER BY followed DESC,{_ORDER} LIMIT ? OFFSET ?
-                """, (json.dumps(followed), *params, limit + 1, offset)).fetchall()
+                           {following} AS followed,canonical_url{excerpts}
+                    FROM {relation}{where}
+                    ORDER BY {order} LIMIT ? OFFSET ?
+                """, (*follow_params, *params, limit + 1, offset)).fetchall()
                 if terms or body_terms:
                     indexed, total = db.execute("""
-                        SELECT count(article_id),count(*) FROM digest_item
-                        LEFT JOIN digest_wechat_body ON id=article_id WHERE source='wechat'
+                        SELECT (SELECT count(*) FROM digest_wechat_body
+                                CROSS JOIN digest_item ON id=article_id WHERE source='wechat'),
+                               (SELECT count(*) FROM digest_item WHERE source='wechat')
                     """).fetchone()
                     result["body_coverage"] = {"indexed": indexed, "total": total}
             else:
-                rows = db.execute(f"SELECT {_PUBLIC_COLUMNS} FROM digest_item{where} ORDER BY {_ORDER} LIMIT ? OFFSET ?",
+                rows = db.execute(f"SELECT {_PUBLIC_COLUMNS} FROM digest_item{where} ORDER BY {order} LIMIT ? OFFSET ?",
                                   (*params, limit + 1, offset)).fetchall()
             items = []
             for row in rows[:limit]:

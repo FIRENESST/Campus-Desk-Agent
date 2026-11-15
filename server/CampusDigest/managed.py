@@ -130,6 +130,8 @@ def _handler(base, index, weread, runtime_key, articles):
                     data = index.wechat_accounts(**filters)
                 elif target.path == _WECHAT:
                     data = _feed(index, filters)
+                elif target.path == _SEARCH:
+                    data = index.read(**filters, relevance=True)
                 else:
                     data = index.read(**filters)
                 return self._json(200, data)

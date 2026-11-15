@@ -3,6 +3,8 @@ import json
 import time
 import unittest
 from copy import deepcopy
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from main_agent.core import AgentError, AgentTimeoutError, Message, ToolCall, ToolSpec
 from main_agent.reliability import (
@@ -13,6 +15,7 @@ from main_agent.reliability import (
 )
 from main_agent.reliability.checks import review_findings
 from main_agent.reliability.evaluation import EvaluationCase, EvaluationScore, evaluate
+from main_agent.reliability.tools import RecordingTools
 
 
 class ModelScript:
@@ -124,6 +127,116 @@ class ArchitectureRegressions(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(case.messages[0].content, "正确标签")
 
 
+class RetrievalReuseTests(unittest.IsolatedAsyncioTestCase):
+    async def test_duplicate_retains_original_citation_and_tool_call_id(self):
+        title, quote = "本科新生报到手册", "请携带录取通知书。"
+        receipt = json.dumps({"hits": [{"source": title, "text": quote}]}, ensure_ascii=False)
+        tools = Tools({"read": ToolResult(receipt, "success", reuse_for=60)})
+        checked = []
+
+        async def guard(name, arguments):
+            checked.append((name, arguments))
+
+        def cite_real_receipt(payload):
+            evidence, = payload["evidence"]
+            self.assertEqual(evidence["content"]["hits"][0]["source"], title)
+            self.assertEqual(evidence["call_id"], "first")
+            return [{"text": quote, "kind": "fact", "status": "supported",
+                     "citations": [{"evidence_id": evidence["id"], "quote": quote}]}]
+
+        arguments = {"query": "新生报到材料", "limit": 5}
+        model = ModelScript([
+            Message("assistant", tool_calls=[
+                ToolCall("first", "read", arguments),
+                ToolCall("repeat-in-batch", "read", {"limit": 5, "query": arguments["query"]}),
+            ]),
+            Message("assistant", tool_calls=[ToolCall("repeat-next-batch", "read", arguments)]),
+            Message("assistant", quote),
+        ])
+        result = await ReliableAgent(model, tools, LLMReviewer(ReviewModel(cite_real_receipt)), tool_guard=guard).run([
+            Message("user", "报到要带什么？"),
+        ])
+
+        self.assertEqual(tools.calls, [("read", arguments)])
+        self.assertEqual(checked, [("read", arguments)] * 3)
+        self.assertEqual(result.stats.total_tool_executions, 1)
+        self.assertEqual(sum(event.kind == "tool.reused" for event in result.snapshot.events), 2)
+        replies = [message for message in result.history if message.role == "tool"]
+        self.assertEqual([reply.tool_call_id for reply in replies], ["first", "repeat-in-batch", "repeat-next-batch"])
+        self.assertEqual(replies[0].content, receipt)
+        self.assertEqual([json.loads(reply.content)["reused_tool_call_id"] for reply in replies[1:]], ["first"] * 2)
+
+    async def test_reuses_still_count_toward_logical_call_budget(self):
+        tools = Tools({"read": ToolResult("资料", "success", reuse_for=60)})
+        model = ModelScript([
+            Message("assistant", tool_calls=[ToolCall(call_id, "read", {})])
+            for call_id in ("read-1", "read-2", "read-3")
+        ])
+        with self.assertRaises(BudgetExceeded) as failure:
+            await ReliableAgent(model, tools, Reviewer(), config=ReliabilityConfig(max_tool_calls=2)).run([
+                Message("user", "查询"),
+            ])
+        self.assertEqual(failure.exception.resource, "tool_calls")
+        self.assertEqual(len(tools.calls), 1)
+        self.assertEqual(sum(event.kind == "tool.reused" for event in failure.exception.snapshot.events), 1)
+
+    async def test_failed_unknown_or_expired_receipts_are_retried(self):
+        clock = SimpleNamespace(time=lambda: 100, monotonic=lambda: 10)
+        adapter = Tools({"read": ToolResult("检索超时", "error", reuse_for=5)})
+        recorded = RecordingTools(adapter, allowed_tools=None, guard=None, interpreter=None)
+        await recorded.list_tools()
+        with patch("main_agent.reliability.tools.time", clock):
+            self.assertEqual(await recorded.call_tool("read", {}), "检索超时")
+            adapter.results["read"] = ToolResult("状态未知", reuse_for=5)
+            self.assertEqual(await recorded.call_tool("read", {}), "状态未知")
+            adapter.results["read"] = ToolResult("证据过期", "success", expires_at=99, reuse_for=5)
+            self.assertEqual(await recorded.call_tool("read", {}), "证据过期")
+            adapter.results["read"] = ToolResult("最新资料", "success", reuse_for=5)
+            self.assertEqual(await recorded.call_tool("read", {}), "最新资料")
+            clock.monotonic = lambda: 16
+            adapter.results["read"] = ToolResult("更新后的资料", "success", reuse_for=5)
+            self.assertEqual(await recorded.call_tool("read", {}), "更新后的资料")
+        self.assertEqual(len(adapter.calls), 5)
+
+    async def test_mutation_preserves_execution_order_and_invalidates_previous_reads(self):
+        class Service(Tools):
+            async def call_tool(self, name, arguments):
+                if name == "write":
+                    self.results["read"] = ToolResult("已占用", "success", reuse_for=60)
+                return await super().call_tool(name, arguments)
+
+        tools = Service({"read": ToolResult("空闲", "success", reuse_for=60), "write": ToolResult("已确认", "success")})
+        model = ModelScript([
+            Message("assistant", tool_calls=[ToolCall(f"call-{index}", name, {})
+                                             for index, name in enumerate(("read", "write", "read"))]),
+            Message("assistant", "预约已确认。"),
+        ])
+        result = await ReliableAgent(model, tools, Reviewer()).run([Message("user", "检查后预约")])
+        self.assertEqual([name for name, _ in tools.calls], ["read", "write", "read"])
+        self.assertEqual([item.content for item in result.evidence], ["空闲", "已确认", "已占用"])
+
+    async def test_concurrent_runs_do_not_share_identical_requests(self):
+        class Model:
+            async def complete(self, messages, tools):
+                if messages[-1].role == "tool":
+                    return Message("assistant", "完成")
+                return Message("assistant", tool_calls=[ToolCall("a", "read", {}), ToolCall("b", "read", {})])
+
+        class Read(Tools):
+            async def call_tool(self, name, arguments):
+                self.calls.append((name, arguments))
+                count = len(self.calls)
+                await asyncio.sleep(0)
+                return ToolResult(f"receipt-{count}", "success", reuse_for=60)
+
+        tools = Read({"read": None})
+        agent = ReliableAgent(Model(), tools, Reviewer())
+        results = await asyncio.gather(*(agent.run([Message("user", user)]) for user in ("甲", "乙")))
+        self.assertEqual(len(tools.calls), 2)
+        self.assertEqual({tuple(item.content for item in result.evidence) for result in results},
+                         {("receipt-1",), ("receipt-2",)})
+
+
 class RuntimeBudgetTests(unittest.IsolatedAsyncioTestCase):
     async def test_zero_model_budget_never_calls_the_model(self):
         model = ModelScript([])
@@ -205,6 +318,54 @@ class RuntimeBudgetTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(tools.calls, [])
             self.assertEqual(failure.exception.resource, resource)
             self.assertEqual(failure.exception.snapshot.executions, ())
+
+    async def test_tool_limits_leave_a_reviewable_draft_from_existing_evidence(self):
+        answer = "本科生报到时应凭录取通知书和有效身份证件。"
+        first = Message("assistant", tool_calls=[ToolCall("first", "lookup", {"query": "入学与注册"})])
+        more = Message("assistant", tool_calls=[ToolCall("more", "lookup", {"query": "补充说明"})])
+        for config, further_requests in (
+            (ReliabilityConfig(max_tool_rounds=1), []),
+            (ReliabilityConfig(max_tool_calls=1), [more]),
+        ):
+            with self.subTest(config=config):
+                model = ModelScript([first, *further_requests, Message("assistant", answer)])
+                tools = Tools({"lookup": ToolResult(answer, "success")})
+                reviewer = ReviewModel(fact_claim)
+                agent = ReliableAgent(model, tools, LLMReviewer(reviewer), config=config, finalize_on_tool_limit=True)
+                result = await agent.run([Message("user", "新生要准备什么材料？请给官方依据。")])
+                self.assertEqual(tools.calls, [("lookup", {"query": "入学与注册"})])
+                final_history, available_tools = model.calls[-1]
+                self.assertEqual(available_tools, [])
+                self.assertEqual([(m.content, m.tool_call_id) for m in final_history if m.role == "tool"], [(answer, "first")])
+                self.assertEqual(result.answer, answer)
+                self.assertEqual(result.stats.review_rounds, 1)
+                self.assertEqual(result.snapshot.phase, "approved")
+
+    async def test_final_repair_starts_from_sources_after_rejected_drafts(self):
+        answer = "本科新生报到须携带有效身份证件。"
+        drafts = ("全校新生都需要携带体检表。", "全校新生还需提交疫苗接种记录。")
+        model = ModelScript([Message("assistant", content) for content in (*drafts, answer)])
+
+        def claims(payload):
+            if payload["answer"] == answer:
+                return fact_claim(payload)
+            return [{"text": payload["answer"], "kind": "fact", "status": "unsupported", "citations": []}]
+
+        class ReviewerWithMalformedReply(ReviewModel):
+            async def complete(self, messages, tools):
+                if json.loads(messages[-1].content)["answer"] == drafts[0]:
+                    return Message("assistant", "评审未生成 JSON")
+                return await super().complete(messages, tools)
+
+        reviewer = LLMReviewer(ReviewerWithMalformedReply(claims), max_format_retries=0)
+        agent = ReliableAgent(model, Tools(), reviewer, final_repair_instruction="按来源重新作答。")
+        result = await agent.run([Message("user", "报到需要哪些材料？")], references=[Evidence("rules", answer, "学校规定")])
+        clean_input = json.loads(model.calls[-1][0][-1].content)
+        self.assertNotIn("answer", clean_input)
+        self.assertEqual(clean_input["evidence"][0]["content"], answer)
+        self.assertEqual(result.answer, answer)
+        self.assertEqual(result.stats.review_rounds, 3)
+        self.assertEqual(result.attempts[0].findings[0].code, "invalid_review")
 
     async def test_nonfinite_arguments_stop_the_batch_before_any_tool_executes(self):
         for arguments in ({"amount": float("nan")}, {"nested": {1: "invalid key"}}):

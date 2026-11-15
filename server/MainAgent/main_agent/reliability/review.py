@@ -147,7 +147,7 @@ def parse_review(text: str) -> Review:
 
 
 class LLMReviewer:
-    """Tool-free review with a bounded retry for malformed review contracts."""
+    """Tool-free review with a bounded retry for unclear or malformed output."""
 
     def __init__(
         self, llm: LLMClient, *, max_context_chars: int = 120_000,
@@ -187,10 +187,19 @@ class LLMReviewer:
                     raise
                 payload["review_format_feedback"] = f"前次评审未通过格式校验。{exc}。请重新完整评审，保持严格 JSON。"
                 continue
-            if attempt == self.max_format_retries or not any(item.code == "invalid_claim_anchor" for item in findings):
+            if attempt == self.max_format_retries:
                 return review
-            payload["review_format_feedback"] = (
-                "前次有声明改写、拼接或重复。逐字复制 answer 中的连续原文片段，保留原标点和 Markdown。"
-                "将重复项合并，每段声明都要核对证据，缺乏支持的部分标为 unsupported。"
-            )
+            if any(item.code == "invalid_claim_anchor" for item in findings):
+                payload["review_format_feedback"] = (
+                    "前次有声明改写、拼接或重复。逐字复制 answer 中的连续原文片段，保留原标点和 Markdown。"
+                    "将重复项合并，每段声明都要核对证据，缺乏支持的部分标为 unsupported。"
+                )
+            elif findings and all(item.code == "review_issue" for item in findings):
+                payload["review_format_feedback"] = (
+                    "独立复核这份答案。issues 只记录必须修正的错误。"
+                    "事实和来源准确且适用范围交代清楚时，缺少更完整的上游资料或可选细节不属于错误。"
+                    "没有必须修正的问题时，将 issues 写为 []。发现实质错误时按原规则标记。"
+                )
+            else:
+                return review
         raise AssertionError("unreachable")

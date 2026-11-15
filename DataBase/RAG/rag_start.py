@@ -9,16 +9,13 @@ from queue import Empty, Queue
 from threading import Thread
 
 import httpx2
-from filelock import Timeout
 
 if __package__:
     from .rag_api import API_HOST
     from .rag_db import RagError
-    from .rag_worker import database_access_lock
 else:
     from rag_api import API_HOST
     from rag_db import RagError
-    from rag_worker import database_access_lock
 
 
 RAG_DIR = Path(__file__).resolve().parent
@@ -67,8 +64,8 @@ def start_rag(uri: str, collection: str, port: int | None) -> int:
     command = [str(interpreter), "-B", "-X", "utf8"]
     options = {"cwd": RAG_DIR, "env": env}
     try:
-        with database_access_lock(uri):
-            init = subprocess.run([*command, "rag_db.py", "init"], **options)
+        # The CLI child owns the storage lock for its whole Milvus session.
+        init = subprocess.run([*command, "rag_db.py", "init"], **options)
         if init.returncode:
             return init.returncode
 
@@ -91,7 +88,5 @@ def start_rag(uri: str, collection: str, port: int | None) -> int:
                 return window.wait()
             finally:
                 _stop_api(api)
-    except Timeout:
-        raise RagError("本地知识库正忙，请稍后启动") from None
     except KeyboardInterrupt:
         return 0

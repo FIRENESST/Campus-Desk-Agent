@@ -19,6 +19,11 @@ from .reliability.models import ToolResult
 
 MAIN_AGENT_MCP_URL = "http://127.0.0.1:8001/mcp"
 LOCAL_MCP_ENV = Path(__file__).resolve().parents[2] / "mcpServer" / ".env"
+RAG_SEARCH_DESCRIPTION = "查已入库的校园规章、学籍制度与校园资料，返回可引用的原文片段和来源。"
+RAG_QUERY_DESCRIPTION = (
+    "写明要查的对象和条款，保留已知文件标题、文号、版次和适用人群。"
+    "同一资料库内的几个证据缺口可用分号分隔。"
+)
 
 
 class MCPToolError(AgentError):
@@ -169,9 +174,11 @@ class MainAgentRAGClient:
     """Expose the MCP server's scoped campus search to the chat orchestrator."""
 
     async def list_tools(self) -> list[ToolSpec]:
-        return [ToolSpec("search_rag", "检索校园资料库中的原文片段和来源。", {
+        return [ToolSpec("search_rag", RAG_SEARCH_DESCRIPTION, {
             "type": "object",
-            "properties": {"query": {"type": "string", "minLength": 1, "maxLength": 4000}},
+            "properties": {"query": {
+                "type": "string", "minLength": 1, "maxLength": 4000, "description": RAG_QUERY_DESCRIPTION,
+            }},
             "required": ["query"],
             "additionalProperties": False,
         })]
@@ -189,7 +196,7 @@ class MainAgentRAGClient:
             if len(receipt) <= 24000 and not receipt.startswith("工具执行失败："):
                 data = json.loads(receipt)
                 if isinstance(data, dict) and isinstance(data.get("hits"), list):
-                    return ToolResult(receipt, "success")
+                    return ToolResult(receipt, "success", reuse_for=60 if data["hits"] else 0)
         except (TimeoutError, MCPError, MCPToolError, httpx2.HTTPError, ValueError, RecursionError, ExceptionGroup):
             pass
         return ToolResult("校园资料库暂时无法检索。", "error")

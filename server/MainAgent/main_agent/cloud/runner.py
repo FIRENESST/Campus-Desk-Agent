@@ -6,6 +6,7 @@ import unicodedata
 from collections.abc import Callable
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass, replace
+from time import time
 from typing import Protocol
 from uuid import UUID
 
@@ -27,11 +28,13 @@ from ..campus_cluster.continuity import (
 )
 from ..campus_cluster.routing import asks_how_to_verify_notice, priority_campus_role, reports_campus_threat
 from ..campus_cluster.subskills.campus_digest import CAMPUS_DIGEST
+from ..campus_cluster.subskills.domain_page import READ_DOMAIN_PAGE
 from ..campus_cluster.subskills.minta_campus import (
     CLASSROOM_CONFIRMATION, CLASSROOM_PENDING, campus_intent,
     redact_classroom_contact,
 )
 from ..campus_cluster.subskills.rumor_assessment import CAMPUS_RUMOR
+from ..campus_cluster.subskills.search_rag import SEARCH_RAG
 from ..campus_cluster.subskills.wechat_articles import WECHAT_ARTICLES
 from ..core import AgentError, LLMClient, Message
 from ..mcp_tools import MainAgentRAGClient, load_subagent_capabilities
@@ -57,9 +60,10 @@ CAMPUS_EVIDENCE_RULE = Rule(
 PUBLIC_ANSWER_RULE = Rule(
     "campus.public_answer",
     "用用户能直接使用的结果回答，保留相关事实和可靠来源。不要报告内部检索的关键词、调用次数、命中情况、"
-    "工具和服务状态，也不要用无关学校概况填充。即使没有能回答问题的资料，也要结合本轮和前文，"
-    "用一两句指出具体事项以及暂时无法确认的部分。把用户转述与已核实的事实分开。"
-    "只有明确能帮助用户继续时才给一个已核实的入口或问一个关键问题。不要列待核对事项清单或泛泛的查询建议。",
+    "工具和服务状态。结合本轮和前文，先给出直接相关且有依据的结果。"
+    "材料只支持一部分时，可以用一句话说明哪一部分暂时无法确认，例如「该届完整报到清单暂时无法确认」。"
+    "一句范围说明符合本规则，无需列出可能缺失的条目。把用户转述与已核实的事实分开。"
+    "只有明确能帮助用户继续时才给一个已核实的入口或问一个关键问题。",
 )
 GREETING_QUERIES = frozenset({"你好", "您好", "嗨", "hi", "hello"})
 IDENTITY_QUERIES = frozenset({
@@ -99,8 +103,13 @@ MAIN_ANSWER_INSTRUCTIONS = (
     "当前资料只支持近期报道时，列出一两条相关报道，说明是否能确认有即将举行或开放报名的活动。"
     "涉及校园事实时只陈述有资料支持的要点，"
     "保留必要的来源和不确定性。只问学校概况且所给的官网简介已经足够时，直接用这份简介作答。"
-    "遇到不确定的校园事实或现有校园资料不足时，"
-    "先调用 search_rag 检索校园资料库，再根据查到的证据作答。"
+    "用户要求找官方说明时，简明列出直接回答问题的要点，逐项对应文件标题、版次、条款及已知原文链接。"
+    "官网首页可以作为查询入口。通用规定按适用人群说明。缺某届正式通知时，只用一句话说明该届完整要求暂不能确认。"
+    "先用已有原文、来源和回执核对用户的问题。证据已经覆盖问题时，直接生成待审核答复。"
+    "需要补查已入库的校内规章或校园资料时，用 search_rag 查仍缺的条款。"
+    "写明对象、校区、年级和已知文件版本。可用已命中的原文标题与校方用语定位缺失条款。"
+    "先把同一资料库内尚缺的要点用分号并入一次查询，读回执后再补查具体缺口。已有证据覆盖的事项直接回答。"
+    "查当届通知和近期变化时，核对协作资料中的发布单位、日期及适用对象。"
     "有整理出的查询目标时，用对话核对其中的对象和范围，再用完整目标组织检索参数。"
     "用户要的是名单、公示或结果时，围绕该目标查询。评审办法只能辅助解释流程或定位来源。"
     "对数学、翻译、写作或可从用户给出的内容直接推导的部分，可以直接作答。"
@@ -120,6 +129,12 @@ GENERAL_ANSWER_INSTRUCTIONS = (
     "对于无法确认的实时信息，说明不确定的部分，不声称查过或执行过外部操作。"
 )
 ANSWER_UNAVAILABLE = "这次未能完成回答，请稍后重试。"
+CAMPUS_FINAL_REPAIR = (
+    "从原始问题和证据重新写一个范围更窄的答案。当前没有供修订的旧草稿，findings 只提供上次的问题类型。"
+    "没有指定篇幅时，用两到四句回答最直接、已核实的部分，带上对应来源和适用对象。"
+    "先回答所问的事实，省略用户未问的流程、联系方式，以及只能从不同年份资料推测的细节。"
+    "证据覆盖不全时，用一句话说明哪个完整清单或具体要求尚无法确认，这句不列举未知的条目。"
+)
 GENERIC_EVIDENCE_ANSWERS = frozenset({
     "这项校园信息暂时无法确认", "这条校园消息暂未核实，请以校方正式通知为准", "现有证据不足，暂时无法给出可靠结论",
 })
@@ -155,6 +170,56 @@ INTERNAL_SEARCH_REPORT = re.compile(
     r"(?:按|用)[^。！？\n]{0,120}关键词[^。！？\n]{0,30}(?:检索|搜索)",
     re.IGNORECASE,
 )
+_RAG_HANDOFF_MAX_CHARS = 16_000
+
+
+def _rag_receipt(evidence: Evidence, now: float) -> dict | None:
+    if (evidence.source != SEARCH_RAG.name or evidence.kind != "tool" or evidence.status != "success"
+            or evidence.expires_at is not None and evidence.expires_at <= now):
+        return None
+    receipt = structured_receipt(evidence.content)
+    if (isinstance(receipt, dict) and isinstance(receipt.get("scope", ""), str)
+            and isinstance(receipt.get("hits"), list)):
+        return receipt
+    return None
+
+
+def _rag_hit_text(hit: object) -> str:
+    text = hit.get("text") if isinstance(hit, dict) else None
+    return text if isinstance(text, str) and text.strip() else ""
+
+
+def _rag_references(evidence_items: list[Evidence], now: float) -> list[Evidence]:
+    references, seen = [], set()
+    remaining = _RAG_HANDOFF_MAX_CHARS
+    for evidence in evidence_items:
+        receipt = _rag_receipt(evidence, now)
+        if receipt is None:
+            continue
+        scope = receipt.get("scope", "")
+        hits = []
+        content = {**receipt, "hits": hits}
+        # Use complete excerpts and leave room for the MainAgent's own tool results.
+        size = (len(json.dumps(content, ensure_ascii=False, separators=(",", ":")))
+                + len(evidence.arguments_json or "") + len(evidence.call_id or ""))
+        for hit in receipt["hits"]:
+            if not (text := _rag_hit_text(hit)):
+                continue
+            chunk_id = hit.get("chunk_id")
+            key = (scope, chunk_id) if isinstance(chunk_id, str) and chunk_id else (scope, str(hit.get("source", "")), text)
+            if key in seen:
+                continue
+            hit_size = len(json.dumps(hit, ensure_ascii=False, separators=(",", ":"))) + bool(hits)
+            if size + hit_size > remaining:
+                continue
+            hits.append(hit)
+            seen.add(key)
+            size += hit_size
+        if hits:
+            references.append(replace(evidence, content=json.dumps(content, ensure_ascii=False, separators=(",", ":"))))
+            remaining -= size
+    return references
+
 
 @dataclass(frozen=True)
 class ExecutionContext:
@@ -249,6 +314,7 @@ class CampusRunner:
                 role: ReliableAgentBackend.from_skills(
                     llm, reviewer, skills=registries[role], rules=(CAMPUS_EVIDENCE_RULE,),
                     allowed_tools=campus_tools if role == AgentId.CAMPUS_SERVICES else None,
+                    finalize_on_tool_limit=True,
                 )
                 for role in AgentId if role != AgentId.RUMOR_ASSESSMENT
             }
@@ -262,6 +328,7 @@ class CampusRunner:
                 rules=(CAMPUS_EVIDENCE_RULE, RUMOR_VERDICT_RULE),
                 output_checks=(RumorVerdictCheck(require_assessment=has_assessment),),
                 rumor_verdict_parser=parse_rumor_verdict,
+                finalize_on_tool_limit=True,
             )
 
             catalog = None
@@ -286,6 +353,8 @@ class CampusRunner:
             llm, MainAgentRAGClient(), LLMReviewer(llm), rules=(CAMPUS_EVIDENCE_RULE, PUBLIC_ANSWER_RULE),
             output_checks=(CampusPublicAnswerCheck(),),
             config=ReliabilityConfig(max_tool_rounds=2, max_tool_calls=4, max_tool_calls_per_batch=2),
+            finalize_on_tool_limit=True,
+            final_repair_instruction=CAMPUS_FINAL_REPAIR,
         )
         return cls(cluster_factory, routing_feedback=routing_feedback, answerer=answerer, campus_chat=campus_chat)
 
@@ -454,6 +523,7 @@ class CampusRunner:
             return RunOutput("请补充要办理的具体对象和所需信息。", Status.NEEDS_INPUT.value)
         profiles = {profile.id: profile.name for profile in cluster.registry.profiles}
         sections, references, steps, artifacts = [], list(request.evidence), [], []
+        delegated_rag = []
         for item in result.results:
             if self.answerer is None and item.reply.content:
                 sections.append(profiles[item.agent_id] + "\n" + item.reply.content)
@@ -468,6 +538,7 @@ class CampusRunner:
                     Evidence(f"specialist:{item.step_id}:{index}", evidence.content, evidence.source,
                              expires_at=evidence.expires_at)
                     for index, evidence in enumerate(item.reply.evidence, 1)
+                    if item.agent_id != AgentId.CAMPUS_INTRODUCTION or evidence.source != SEARCH_RAG.name
                 )
             if item.agent_id == AgentId.RUMOR_ASSESSMENT and item.reply.rumor_verdict in {
                 RumorVerdict.SUPPORTED, RumorVerdict.REFUTED, RumorVerdict.MIXED,
@@ -477,20 +548,27 @@ class CampusRunner:
                     for index, value in enumerate(item.reply.evidence, 1)
                     if value.source in {CAMPUS_RUMOR.name, CAMPUS_DIGEST.name, WECHAT_ARTICLES.name} and value.status == "success"
                 )
-            if item.agent_id == AgentId.CAMPUS_INTRODUCTION and item.reply.reason != "tool_limit_reached":
+            if item.agent_id == AgentId.CAMPUS_INTRODUCTION:
                 snapshot = item.snapshot or item.reply.snapshot
-                evidence_items = item.reply.evidence or (snapshot.evidence if snapshot else ())
-                walking_receipts = {
-                    evidence.content: evidence for evidence in evidence_items
-                    if evidence.kind == "tool" and evidence.source == "campus_street_view" and evidence.status == "success"
-                    and isinstance(receipt := structured_receipt(evidence.content), dict)
-                    and receipt.get("status") == "walking_route"
-                }
-                references.extend(
-                    Evidence(f"specialist:{item.step_id}:tool:{index}", evidence.content, evidence.source,
-                             expires_at=evidence.expires_at)
-                    for index, evidence in enumerate(walking_receipts.values(), 1)
+                recorded_evidence = snapshot.evidence if snapshot else item.reply.evidence
+                delegated_rag.extend(
+                    replace(evidence, id=f"specialist:{item.step_id}:rag:{index}")
+                    for index, evidence in enumerate(recorded_evidence, 1)
+                    if evidence.source == SEARCH_RAG.name
                 )
+                if item.reply.reason != "tool_limit_reached":
+                    evidence_items = item.reply.evidence or recorded_evidence
+                    map_receipts = {
+                        evidence.content: evidence for evidence in evidence_items
+                        if evidence.kind == "tool" and evidence.source == "campus_street_view" and evidence.status == "success"
+                        and isinstance(receipt := structured_receipt(evidence.content), dict)
+                        and (receipt.get("status") == "walking_route" or isinstance(receipt.get("point"), dict))
+                    }
+                    references.extend(
+                        Evidence(f"specialist:{item.step_id}:tool:{index}", evidence.content, evidence.source,
+                                 expires_at=evidence.expires_at)
+                        for index, evidence in enumerate(map_receipts.values(), 1)
+                    )
             elif item.agent_id == AgentId.INFORMATION_SEARCH:
                 snapshot = item.snapshot or item.reply.snapshot
                 evidence_items = item.reply.evidence or (snapshot.evidence if snapshot else ())
@@ -508,6 +586,8 @@ class CampusRunner:
                             references.append(replace(evidence, id=evidence_id))
                     elif evidence.source == CAMPUS_DIGEST.name and item.reply.status != Status.COMPLETED:
                         references.append(Evidence(evidence_id, evidence.content, evidence.source, expires_at=evidence.expires_at))
+                    elif evidence.source == READ_DOMAIN_PAGE.name:
+                        references.append(replace(evidence, id=evidence_id))
                     seen.add(key)
             elif item.agent_id == AgentId.CAMPUS_SERVICES:
                 snapshot = item.snapshot or item.reply.snapshot
@@ -534,10 +614,14 @@ class CampusRunner:
         route.pop("timetable_query")
         route.pop("parts")
         artifacts.append({"kind": "route_plan", "payload": route})
+        rag_references = _rag_references(delegated_rag, time())
+        references.extend(rag_references)
         status = result.status.value
-        if status == Status.FAILED.value and any(
-            item.source in {CAMPUS_DIGEST.name, WECHAT_ARTICLES.name, "campus_street_view", CAMPUS_TIMETABLE.name}
-            for item in references
+        if status == Status.FAILED.value and (
+            rag_references or any(
+                item.source in {CAMPUS_DIGEST.name, WECHAT_ARTICLES.name, "campus_street_view", CAMPUS_TIMETABLE.name}
+                for item in references
+            )
         ):
             status = Status.INSUFFICIENT_EVIDENCE.value
         change_review = any(item.agent_id == AgentId.RUMOR_ASSESSMENT for item in result.results)
@@ -814,7 +898,7 @@ class CampusRunner:
         evidence_gap = status == Status.INSUFFICIENT_EVIDENCE.value
         if evidence_gap or status == Status.FAILED.value:
             messages.append(Message("system", (
-                "从本轮问题和会话历史确认用户要解决的具体事项。有原始资料就先核对，再按该事项补查 search_rag。"
+                "从本轮问题和会话历史确认用户要解决的具体事项。先核对已取得的原文，只对校内规章和资料库证据缺口使用 search_rag。"
                 "给出可确认的部分和具体缺口。"
                 "若用户想办理清单中的业务，先依据当前账号的办理条件说明如何补齐信息。"
             )))
@@ -838,13 +922,14 @@ class CampusRunner:
             artifacts.append({"kind": "main_answer_snapshot", "payload": asdict(result.snapshot)})
         if status == Status.FAILED.value:
             status = Status.PARTIAL.value
+        now = time()
         if evidence_gap and not change_review and (
             any(item.source in {CAMPUS_DIGEST.name, WECHAT_ARTICLES.name}
                 and isinstance(receipt := structured_receipt(item.content), dict)
                 and (receipt.get("items") or receipt.get("content") or receipt.get("accounts")) for item in references)
             or any(item.source == "campus_street_view" and isinstance(receipt := structured_receipt(item.content), dict)
                    and receipt.get("status") == "walking_route" for item in references)
-            or any(item.source == "search_rag" and item.status == "success" and json.loads(item.content)["hits"]
+            or any((receipt := _rag_receipt(item, now)) and any(_rag_hit_text(hit) for hit in receipt["hits"])
                    for item in result.evidence)
         ):
             status = Status.PARTIAL.value

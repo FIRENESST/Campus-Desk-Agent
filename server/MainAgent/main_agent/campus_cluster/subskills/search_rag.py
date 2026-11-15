@@ -2,15 +2,17 @@
 
 from typing import Annotated
 
-from pydantic import StringConstraints
+from pydantic import Field, StringConstraints
 
-from ...mcp_tools import MainAgentRAGClient
+from ...mcp_tools import MainAgentRAGClient, RAG_QUERY_DESCRIPTION, RAG_SEARCH_DESCRIPTION
 from ...reliability.models import ToolResult
 from ..skills import Skill, SkillContext, SkillInput
 
 
 class SearchRAGInput(SkillInput):
-    query: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=4000)]
+    query: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=4000)] = Field(
+        description=RAG_QUERY_DESCRIPTION,
+    )
 
 
 async def search_rag(_context: SkillContext, args: SearchRAGInput) -> ToolResult:
@@ -19,6 +21,6 @@ async def search_rag(_context: SkillContext, args: SearchRAGInput) -> ToolResult
 
 SEARCH_RAG = Skill(
     "search_rag",
-    "检索校园资料库，查找核实校园事实、校内公告和规章所需的原文片段和来源。",
+    RAG_SEARCH_DESCRIPTION,
     SearchRAGInput, search_rag, read_only=True,
 )

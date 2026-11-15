@@ -35,11 +35,12 @@ BUILTIN_RULES = (
 
 @dataclass(frozen=True)
 class ToolResult:
-    """An application receipt; success must reflect the business outcome."""
+    """An application receipt. Trusted adapters may opt fresh read-only results into per-run reuse."""
 
     content: str
     status: EvidenceStatus = "unknown"
     expires_at: float | None = None
+    reuse_for: float = 0.0
 
     def __post_init__(self):
         if not isinstance(self.content, str):
@@ -47,6 +48,9 @@ class ToolResult:
         if self.status not in ("unknown", "success", "error"):
             raise ValueError("工具状态无效")
         _expiry(self.expires_at)
+        if (type(self.reuse_for) not in (float, int) or not math.isfinite(self.reuse_for)
+                or self.reuse_for < 0):
+            raise ValueError("reuse_for 必须是有限的非负秒数")
 
 
 def _expiry(value: float | None) -> None:

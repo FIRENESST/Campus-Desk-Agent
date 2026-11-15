@@ -19,6 +19,7 @@ from main_agent.campus_cluster.subskills.campus_digest import CAMPUS_DIGEST
 from main_agent.campus_cluster.subskills.campus_street_view import CAMPUS_STREET_VIEW
 from main_agent.campus_cluster.subskills.minta_campus import CAMPUS_ACTION
 from main_agent.campus_cluster.subskills.rumor_assessment import CAMPUS_RUMOR
+from main_agent.campus_cluster.subskills.search_rag import SEARCH_RAG
 from main_agent.campus_cluster.subskills.wechat_articles import WECHAT_ARTICLES
 from main_agent.cloud.persona import MAIN_AGENT_PERSONA
 from main_agent.cloud.runner import (
@@ -785,13 +786,14 @@ class ModelWiringTests(unittest.IsolatedAsyncioTestCase):
                     review = json.loads(messages[-1].content)
                     places = [entry for entry in review["evidence"] if entry["source"] == "campus_street_view"]
                     test.assertEqual(len(places), 1)
-                    test.assertEqual(json.loads(places[0]["content"])["point"]["id"], "library")
+                    receipt = places[0]["content"]
+                    test.assertEqual((json.loads(receipt) if isinstance(receipt, str) else receipt)["point"]["id"], "library")
                     return Message("assistant", json.dumps({
                         "rule_checks": [{"rule_id": rule["id"], "status": "pass", "reason": "符合"}
                                         for rule in review["rules"]],
                         "claims": [], "issues": [],
                     }))
-                if any(message.content == MAIN_ANSWER_INSTRUCTIONS for message in messages):
+                if not tools or any(message.content == MAIN_ANSWER_INSTRUCTIONS for message in messages):
                     return Message("assistant", answer)
                 names = {tool.name for tool in tools}
                 test.assertIn("campus_street_view", names)
@@ -806,8 +808,10 @@ class ModelWiringTests(unittest.IsolatedAsyncioTestCase):
         with patch("main_agent.mcp_tools.connect_main_agent_mcp", side_effect=TimeoutError):
             output = await runner.run(ExecutionContext(uuid4(), uuid4(), uuid4(), uuid4(), question, (intro.value,), ()))
         self.assertEqual(output.content, answer)
-        self.assertEqual(output.result_status, "insufficient_evidence")
-        self.assertEqual(output.steps[0]["result"]["reason"], "tool_limit_reached")
+        self.assertEqual(output.result_status, "completed")
+        snapshot = next(a["payload"]["snapshot"] for a in output.artifacts if a["kind"] == "snapshot")
+        self.assertEqual(snapshot["phase"], "approved")
+        self.assertEqual(snapshot["stats"]["tool_executions"], 1)
 
     async def test_navigation_provides_the_route_to_the_main_answer_and_reviewer(self):
         from navigation_fixture import navigation_fixture
@@ -902,7 +906,7 @@ class ModelWiringTests(unittest.IsolatedAsyncioTestCase):
             ("invalid_specialist_review", "invalid_review", [False, False, True]),
             ("invalid_tool_batch", "agent_error", [True]),
             ("step_timeout", "agent_timeout", [True]),
-            ("invalid_main_review", "invalid_review", [False, False, True, True]),
+            ("invalid_main_review", "invalid_review", [False] * 2 + [True] * 6),
         ):
             with self.subTest(failure=failure):
                 tool_calls = []
@@ -1042,6 +1046,70 @@ class ModelWiringTests(unittest.IsolatedAsyncioTestCase):
                     self.assertIn(Message("system", MAIN_AGENT_PERSONA), model.repair_messages)
                     snapshot = next(item["payload"] for item in result.artifacts if item["kind"] == "main_answer_snapshot")
                     self.assertEqual(snapshot["attempts"][0]["answer"], search_report)
+
+    async def test_main_agent_reuses_distinct_rag_excerpts_from_specialist_evidence(self):
+        role = AgentId.CAMPUS_INTRODUCTION
+        excerpt = "本科生申请请假须事先提交申请。\n补充资料可在获批前提交。"
+        old = {"chunk_id": "old", "source": "教务手册 2025 版", "text": excerpt}
+        current = {"chunk_id": "current", "source": "教务手册 2026 版", "text": excerpt}
+        expired = {"chunk_id": "expired", "source": "已过期说明", "text": excerpt}
+        large = {"chunk_id": "large", "source": "篇幅过长的说明", "text": "附" * 16_001}
+        answer = "根据教务手册 2026 版，本科生申请请假须事先提交申请。"
+        searches = {
+            "first": ([old, large], "success", None),
+            "repeat": ([old], "success", None),
+            "current": ([old, current], "success", None),
+            "expired": ([expired], "success", 1.0),
+            "error": ([expired], "error", None),
+            "empty": ([{"text": " "}], "success", None),
+        }
+
+        async def search(_context, args):
+            calls.append(args.query)
+            hits, status, expiry = searches[args.query]
+            return ToolResult(json.dumps({"scope": "campus", "hits": hits}, ensure_ascii=False), status, expiry)
+
+        test = self
+
+        class Model:
+            async def complete(self, messages, _tools):
+                system = messages[0].content
+                if system.startswith("你负责校园智能体路由的范围判断"):
+                    return Message("assistant", '{"policy_lookup":true}')
+                if system.startswith(REVIEW_INSTRUCTIONS):
+                    payload = json.loads(messages[-1].content)
+                    main = payload["messages"][0]["content"] == MAIN_ANSWER_INSTRUCTIONS
+                    if failed and not main:
+                        return Message("assistant", '{}')
+                    evidence = [item for item in payload["evidence"] if item["source"] == SEARCH_RAG.name]
+                    if main:
+                        test.assertEqual([item["call_id"] for item in evidence], ["first", "current"])
+                        test.assertEqual([item["content"]["hits"] for item in evidence], [[old], [current]])
+                        test.assertEqual([item["kind"] for item in evidence], ["tool", "tool"])
+                        test.assertEqual(json.loads(evidence[1]["arguments_json"]), {"query": "current"})
+                    receipt = next(item for item in evidence if item["call_id"] == "current")
+                    return Message("assistant", json.dumps({
+                        "rule_checks": [{"rule_id": rule["id"], "status": "pass", "reason": "符合"} for rule in payload["rules"]],
+                        "claims": [{"text": answer, "kind": "fact", "status": "supported",
+                                    "citations": [{"evidence_id": receipt["id"], "quote": excerpt}]}],
+                        "issues": [],
+                    }))
+                if not calls:
+                    return Message("assistant", tool_calls=[ToolCall(name, SEARCH_RAG.name, {"query": name}) for name in searches])
+                return Message("assistant", answer)
+
+        skill = replace(SEARCH_RAG, handler=search)
+        for failed in (False, True):
+            calls = []
+            runner = CampusRunner.with_model(Model(), skills_factory=lambda _: SkillRegistry({role: (skill,)}))
+            with self.subTest(failed=failed), patch("main_agent.mcp_tools.connect_main_agent_mcp") as mcp:
+                result = await runner.run(ExecutionContext(
+                    uuid4(), uuid4(), uuid4(), uuid4(), "本科生的请假规定是什么？", (), (),
+                ))
+                mcp.assert_not_called()
+            self.assertEqual(calls, list(searches))
+            self.assertEqual(result.content, answer)
+            self.assertEqual(result.result_status, "partial" if failed else "completed")
 
     async def test_explicit_targets_skip_model_routing_and_unknown_roles_cannot_be_dispatched(self):
         calls = []

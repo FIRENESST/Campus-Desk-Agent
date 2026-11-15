@@ -117,6 +117,8 @@ return ToolResult(content='{"booking_id":"B001","status":"confirmed"}', status="
 
 `Evidence` 和 `ToolResult` 可以携带 `expires_at`（Unix 时间戳）。过期的引用不能支持当前结论，会触发受限补证；`None` 表示应用没有声明有效期，模块不能据此保证资料仍然有效。评审上下文提供当前 `evaluated_at`，最终程序检查会再次核对过期时间。
 
+可信只读工具可在成功回执中设置 `reuse_for`（秒）。相同参数的重复请求会指向本轮的原始回执，仍会校验权限、计入调用预算，并在快照中记录 `tool.reused`。非复用工具执行后将重新检索，防止沿用写入前的资料。当前仅校园 RAG、校园日报和公众号索引启用短时复用。
+
 ## 按需补充证据
 
 ```python
@@ -189,6 +191,19 @@ agent = ReliableAgent(
 运行器和评分器分别获得独立的用例副本，避免运行器修改输入后污染评分依据。`evaluate` 支持 `run_timeout`、`score_timeout`、`max_concurrency`（默认 240 秒、60 秒、1），并发结果保持原用例顺序；取消评测会清理正在执行的 worker。记录中区分 `runner` 和 `scorer` 异常，保留运行统计，分别报告 `factual_rate`、`task_success_rate` 和 `instruction_rate`。
 
 建议对比单次生成、自检、独立评审修复、评审加补证，并报告完整通过率、错误拒答率、延迟和实际 token 费用。在没有真实模型和独立测试集的测量前，不能把单元测试通过或“获评审批准”当成模型准确率提升。
+
+### 校园检索工具回放
+
+校园介绍用 RAG 查规章原文和生效版本，信息搜寻用校园日报定位有日期的通知。公众号检索可按标题、正文词或链接查到条目，再按条目 ID 读取正文。同一事项先做一次查询，依据回执补查仍缺的证据。MainAgent 可将同一资料库的多个待查条款用分号写入一次查询。
+
+从 `server/MainAgent` 使用本机 llmServer 运行合成案例。第一条命令用于改动前保存提示词和注册工具定义。第二条命令在改动后分别比较基线、仅改提示词、仅改工具说明、两者都改。可以用 `--split development` 复跑定位问题的案例，默认使用单独的验证组。
+
+```powershell
+.\.venv\Scripts\python.exe -B -m examples.retrieval_tool_eval --capture-baseline .runtime/jtpro-baseline.json
+.\.venv\Scripts\python.exe -B -m examples.retrieval_tool_eval --baseline .runtime/jtpro-baseline.json
+```
+
+每个案例做一次模型推理，回放只检查模型提出的调用。`tool_correct` 统计工具名称集合与预期一致的案例。`slot_correct` 检查其中首个调用是否通过参数校验且保留指定的值。`call_correct` 另外要求调用次数符合预期。`proposed_calls` 用来观察重复查询。每个案例的预期在脚本中可查，结果衡量初次工具决策，实际内容召回和最终答案准确度需要分别测量。[JTPRO 论文](https://arxiv.org/abs/2604.19821)
 
 ## 本地检查
 

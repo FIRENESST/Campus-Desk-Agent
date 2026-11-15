@@ -111,7 +111,7 @@ class AgentCore:
         except TimeoutError as exc:
             raise AgentTimeoutError(f"{operation}超时") from exc
 
-    async def run(self, messages: list[Message]) -> list[Message]:
+    async def run(self, messages: list[Message], *, final_draft_instruction: str | None = None) -> list[Message]:
         history = list(messages)
         available_tools = await self._with_timeout(
             self.tools.list_tools(),
@@ -121,15 +121,15 @@ class AgentCore:
         available_tool_names = {tool.name for tool in available_tools}
 
         for round_index in range(self.max_tool_rounds + 1):
+            if final_draft_instruction and available_tools and round_index == self.max_tool_rounds:
+                break
             assistant_message = await self._with_timeout(
                 self.llm.complete(history, available_tools),
                 self.llm_timeout,
                 "LLM 请求",
             )
-            history.append(assistant_message)
-
             if not assistant_message.tool_calls:
-                return history
+                return [*history, assistant_message]
 
             if round_index == self.max_tool_rounds:
                 break
@@ -139,12 +139,18 @@ class AgentCore:
                     raise UnavailableToolError(f"模型请求了未注册的工具：{call.name}")
 
             if self.before_tool_batch is not None:
-                await self._with_timeout(
-                    self.before_tool_batch(assistant_message.tool_calls),
-                    self.tool_timeout,
-                    "工具批次预检",
-                )
+                try:
+                    await self._with_timeout(
+                        self.before_tool_batch(assistant_message.tool_calls),
+                        self.tool_timeout,
+                        "工具批次预检",
+                    )
+                except ToolRoundLimitExceeded:
+                    if not final_draft_instruction:
+                        raise
+                    break
 
+            history.append(assistant_message)
             for call in assistant_message.tool_calls:
                 result = await self._with_timeout(
                     self.tools.call_tool(call.name, call.arguments),
@@ -159,4 +165,15 @@ class AgentCore:
                     )
                 )
 
+        if final_draft_instruction and available_tools:
+            draft_messages = list(history)
+            prompt_index = next((i for i, item in enumerate(history) if item.role not in {"system", "developer"}), len(history))
+            draft_messages.insert(prompt_index, Message("system", final_draft_instruction))
+            draft = await self._with_timeout(
+                self.llm.complete(draft_messages, []),
+                self.llm_timeout,
+                "生成答案草稿",
+            )
+            if not draft.tool_calls:
+                return [*history, draft]
         raise ToolRoundLimitExceeded("工具调用超过最大轮数")
