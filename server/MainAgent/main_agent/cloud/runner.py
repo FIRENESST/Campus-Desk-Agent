@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import re
 import unicodedata
 from collections.abc import Callable
@@ -20,13 +21,14 @@ from ..campus_cluster.agents.campus_services import PROFILE as CAMPUS_SERVICES_P
 from ..campus_cluster.subskills.campus_timetable import CAMPUS_TIMETABLE
 from ..campus_cluster.capabilities import default_skill_registries, describe_capabilities, scope_actions
 from ..campus_cluster.coordinator import StepActivity
+from ..campus_cluster.contracts import aggregate_status
 from ..campus_cluster.continuity import (
     CONVERSATION_CONTINUITY, SUPPORT_RESPONSE, recent_explicit_risk, resolved_query_message,
 )
 from ..campus_cluster.routing import asks_how_to_verify_notice, priority_campus_role, reports_campus_threat
 from ..campus_cluster.subskills.campus_digest import CAMPUS_DIGEST
 from ..campus_cluster.subskills.minta_campus import (
-    CAMPUS_ACTION, CLASSROOM_CONFIRMATION, CLASSROOM_PENDING, campus_intent,
+    CLASSROOM_CONFIRMATION, CLASSROOM_PENDING, campus_intent,
     redact_classroom_contact,
 )
 from ..campus_cluster.subskills.rumor_assessment import CAMPUS_RUMOR
@@ -77,6 +79,7 @@ MAIN_ANSWER_INSTRUCTIONS = (
     "你可以判断本轮是否涉及校园。判断应严格、保守，以完成任务是否依赖校园事实或校内业务为准，"
     "结合上下文判断指代，避免单凭出现学校名称下结论。"
     "协作结果作为参考资料，以自然、简明的方式组织答案。只引用与用户问题直接相关的资料。"
+    "涉及多个事项时，按提问顺序给出各项结果或指出具体缺口，保留每项对应的对象和范围。"
     "以本轮提供的可办理事项清单了解当前账号可申请的业务、所需信息和前置校验。"
     "自行判断用户是在询问、准备办理还是补充资料。已经提供的资料不重复索要，意图不清楚时只问最需要确认的一项。"
     "用户询问如何使用已接入的办理功能时，按清单说明可操作的下一步。"
@@ -152,6 +155,7 @@ INTERNAL_SEARCH_REPORT = re.compile(
     r"(?:按|用)[^。！？\n]{0,120}关键词[^。！？\n]{0,30}(?:检索|搜索)",
     re.IGNORECASE,
 )
+
 @dataclass(frozen=True)
 class ExecutionContext:
     user_id: UUID
@@ -238,7 +242,7 @@ class CampusRunner:
                 registries = {role: registry.with_handlers(handlers) for role, registry in registries.items()}
             campus_tools = {
                 skill["name"] for skill in registries[AgentId.CAMPUS_SERVICES].describe(CAMPUS_SERVICES_PROFILE)
-                if skill["enabled"] and skill["name"] != CAMPUS_ACTION.name
+                if skill["enabled"] and skill["read_only"]
             }
             reviewer = LLMReviewer(llm)
             backends = {
@@ -365,7 +369,19 @@ class CampusRunner:
                     return self._confirmation_hint(confirmation_plan, clarify=True)
                 return RunOutput("你是在补充刚才的教室预约，还是想问一件新事？", Status.NEEDS_INPUT.value)
             if isinstance(turn, ClassroomTurn):
-                return await self._run_classroom(context, self.cluster_factory(context), turn)
+                cluster = self.cluster_factory(context)
+                if isinstance(cluster.router, LLMRouter):
+                    try:
+                        async with asyncio.timeout(cluster.config.step_timeout):
+                            plan = await cluster.router.check_compound(request, cluster.registry.profiles)
+                    except (AgentError, TimeoutError):
+                        plan = None
+                    if plan is not None:
+                        result = await cluster.run(request, prepared_plan=plan)
+                        if result.plan.parts:
+                            return await self._run_compound(context, request, cluster, result.plan.parts)
+                        return await self._finish_plan(context, request, cluster, result)
+                return await self._run_classroom(context, cluster, turn)
             if command == "确认" and confirmation_plan is not None:
                 return self._confirmation_hint(confirmation_plan)
             if intent is not None and model is None:
@@ -389,6 +405,8 @@ class CampusRunner:
         result, general_reply = None, None
         try:
             result = await cluster.run(request, on_dispatch=on_dispatch, step_activity=context.step_activity)
+            if result.plan.parts:
+                return await self._run_compound(context, request, cluster, result.plan.parts, on_dispatch=on_dispatch)
             if self.answerer is not None and result.plan.general:
                 general_reply = await self._answer_general(
                     request, support=result.plan.support, campus_threat=result.plan.campus_threat,
@@ -400,6 +418,8 @@ class CampusRunner:
                     result = await cluster.run(
                         replace(request, campus_required=True), on_dispatch=on_dispatch, step_activity=context.step_activity,
                     )
+                    if result.plan.parts:
+                        return await self._run_compound(context, request, cluster, result.plan.parts, on_dispatch=on_dispatch)
                     general_reply = None
         except (AgentError, TimeoutError):
             if self.answerer is None:
@@ -412,11 +432,16 @@ class CampusRunner:
         finally:
             if epoch is not None and (calls or (result is not None and result.plan.campus_action is None
                                                and not result.plan.support)):
-                answered_direct = result is not None and result.plan.general
-                await feedback.record(epoch, request.query, tuple(calls), explicit=bool(request.targets),
+                answered_direct = result is not None and (
+                    result.plan.general or (bool(result.plan.parts) and all(part.plan.general for part in result.plan.parts))
+                )
+                await feedback.record(epoch, request.query, tuple(dict.fromkeys(calls)), explicit=bool(request.targets),
                                       answered_direct=answered_direct)
+        return await self._finish_plan(context, request, cluster, result, general_reply=general_reply)
+
+    async def _finish_plan(self, context, request, cluster, result, *, general_reply=None, timetable_step="campus-timetable"):
         if timetable := result.plan.timetable_query:
-            return await self._run_timetable(context, cluster, timetable)
+            return await self._run_timetable(context, cluster, timetable, step_id=timetable_step)
         if proposal := result.plan.campus_action:
             if self.campus_chat is None:
                 return RunOutput("校园服务尚未启用这项办理能力。", Status.NEEDS_CONFIGURATION.value)
@@ -428,7 +453,7 @@ class CampusRunner:
                 return await self._run_action(context, cluster, proposal, confirm_first=True, review=True)
             return RunOutput("请补充要办理的具体对象和所需信息。", Status.NEEDS_INPUT.value)
         profiles = {profile.id: profile.name for profile in cluster.registry.profiles}
-        sections, references, steps, artifacts = [], [], [], []
+        sections, references, steps, artifacts = [], list(request.evidence), [], []
         for item in result.results:
             if self.answerer is None and item.reply.content:
                 sections.append(profiles[item.agent_id] + "\n" + item.reply.content)
@@ -507,6 +532,7 @@ class CampusRunner:
         route.pop("service_guide")
         route.pop("resolved_query")
         route.pop("timetable_query")
+        route.pop("parts")
         artifacts.append({"kind": "route_plan", "payload": route})
         status = result.status.value
         if status == Status.FAILED.value and any(
@@ -539,9 +565,118 @@ class CampusRunner:
         output.validate()
         return output
 
-    async def _run_timetable(self, context, cluster, query):
+    async def _run_compound(self, context, request, cluster, parts, *, on_dispatch=None):
+        tasks = {}
+        capacity = asyncio.Semaphore(cluster.config.max_parallel)
+        actions = {index for index, part in enumerate(parts, 1) if part.plan.campus_action is not None}
+        pending_selection = actions if len(actions) > 1 else set()
+        try:
+            async with asyncio.timeout(cluster.config.total_timeout), asyncio.TaskGroup() as group:
+                for index, part in enumerate(parts, 1):
+                    tasks[index] = group.create_task(self._run_question_part(
+                        context, request, cluster, index, part, tasks, capacity,
+                        on_dispatch=on_dispatch, pending_selection=index in pending_selection,
+                    ))
+        except TimeoutError:
+            pass
+        outputs = {
+            index: (
+                RunOutput("这部分查询超时，请稍后重试。", Status.FAILED.value) if task.cancelled() else task.result()
+            )
+            for index, task in tasks.items()
+        }
+        return self._combine_questions(parts, outputs, pending_selection)
+
+    async def _run_question_part(
+        self, context, request, cluster, index, part, tasks, capacity, *, on_dispatch, pending_selection,
+    ):
+        if pending_selection:
+            return RunOutput("", Status.NEEDS_INPUT.value)
+        dependencies = {number: await tasks[number] for number in part.depends_on}
+        incomplete = [number for number, output in dependencies.items() if output.result_status != Status.COMPLETED.value]
+        if incomplete:
+            numbers = "、".join(str(number) for number in incomplete)
+            return RunOutput(f"这项需要等第 {numbers} 项核实后才能继续。", Status.BLOCKED.value)
+        upstream = tuple(Evidence(f"question:{number}", output.content, f"第 {number} 项的回答")
+                         for number, output in dependencies.items())
+        question = redact_classroom_contact(part.query) if self.campus_chat else part.query
+        scoped_request = replace(request, query=question, evidence=(*request.evidence, *upstream))
+        plan = part.plan
+        step_ids = {step.id: f"part-{index}-step-{number}" for number, step in enumerate(plan.steps, 1)}
+        plan = replace(plan, steps=tuple(
+            replace(step, id=step_ids[step.id], depends_on=tuple(step_ids[target] for target in step.depends_on))
+            for step in plan.steps
+        ))
+        try:
+            result = await cluster.run(scoped_request, on_dispatch=on_dispatch, step_activity=context.step_activity,
+                                       prepared_plan=plan, step_capacity=capacity)
+            async with capacity, asyncio.timeout(cluster.config.step_timeout):
+                general = (await self._answer_general(scoped_request)
+                           if self.answerer is not None and plan.general and not upstream else None)
+                return await self._finish_plan(context, scoped_request, cluster, result, general_reply=general,
+                                               timetable_step=f"part-{index}-timetable")
+        except TimeoutError:
+            return RunOutput("这部分查询超时，请稍后重试。", Status.FAILED.value)
+        except Exception as exc:
+            logging.getLogger(__name__).warning("Compound question part %s failed (%s)", index, type(exc).__name__)
+            return RunOutput("这部分暂时无法完成，请稍后重试。", Status.FAILED.value)
+
+    @staticmethod
+    def _combine_questions(parts, outputs, pending_selection):
+        labels = {}
+        for index, part in enumerate(parts, 1):
+            label = " ".join(redact_classroom_contact(part.query).split())
+            label = label[:179] + "…" if len(label) > 180 else label
+            labels[index] = re.sub(r"([\\`*_\[\]<>])", r"\\\1", label)
+        truncated = sum(len(output.content) for output in outputs.values()) > 90_000
+        section_limit = 90_000 // len(parts) if truncated else 90_000
+        sections, steps = [], []
+        artifacts = [{"kind": "route_plan", "payload": {
+            "parts": [
+                {"query": redact_classroom_contact(part.query), "depends_on": part.depends_on,
+                 "status": outputs[index].result_status}
+                for index, part in enumerate(parts, 1)
+            ],
+        }}]
+        for index in labels:
+            output = outputs[index]
+            if index not in pending_selection:
+                body = output.content.strip() or "这部分暂时无法确认。"
+                if len(body) > section_limit:
+                    body = body[:section_limit - 1] + "…"
+                sections.append(f"**{index}. {labels[index]}**\n\n{body}")
+            steps.extend(output.steps)
+            artifacts.extend(
+                {**artifact, "payload": {**artifact["payload"], "question": index}}
+                for artifact in output.artifacts if artifact["kind"] != "route_plan"
+            )
+        if pending_selection:
+            choices = "、".join(f"第 {index} 项「{labels[index]}」" for index in sorted(pending_selection))
+            sections.append(f"请先选择一项办理：{choices}。")
+        content = "\n\n".join(sections)
+        for index, step in enumerate(steps):
+            if step["step_id"] == "minta-action" and step["status"] == Status.NEEDS_INPUT.value:
+                steps[index] = {**step, "result": {**step["result"], "compound_reply": content}}
+        status = aggregate_status({Status(output.result_status) for output in outputs.values()})
+        if truncated and status == Status.COMPLETED:
+            status = Status.PARTIAL
+        result = RunOutput(content, status.value, tuple(steps), tuple(artifacts))
+        try:
+            result.validate()
+        except ValueError:
+            # Multiple independent runs can exceed the shared audit budget with full model snapshots.
+            result = replace(result, artifacts=tuple(
+                artifact for artifact in artifacts if not artifact["kind"].endswith("snapshot")
+            ))
+            try:
+                result.validate()
+            except ValueError:
+                result = replace(result, artifacts=(artifacts[0],))
+                result.validate()
+        return result
+
+    async def _run_timetable(self, context, cluster, query, *, step_id="campus-timetable"):
         agent = cluster.registry.get(AgentId.CAMPUS_SERVICES)
-        step_id = "campus-timetable"
         activity = context.step_activity(step_id, agent.profile.id) if context.step_activity else nullcontext()
         receipt = None
         async with activity:

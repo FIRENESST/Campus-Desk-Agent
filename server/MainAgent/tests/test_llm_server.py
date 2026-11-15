@@ -9,8 +9,9 @@ from uuid import uuid4
 
 from main_agent import LLMServerSettings, Message, ToolCall, ToolResult
 from main_agent.campus_cluster import (
-    AgentId, ClusterConfig, ClusterRequest, LLMRouter, Skill, SkillInput, SkillRegistry, build_campus_cluster,
+    AgentId, AgentReply, ClusterConfig, ClusterRequest, LLMRouter, Skill, SkillInput, SkillRegistry, Status, build_campus_cluster,
 )
+from main_agent.campus_cluster.action_plan import CAMPUS_ACTION_CONFIRMATION
 from main_agent.campus_cluster.capabilities import default_skill_registries, describe_capabilities, scope_actions
 from main_agent.campus_cluster.continuity import SUPPORT_RESPONSE, resolved_query_message
 from main_agent.campus_cluster.routing import priority_campus_role, reports_campus_threat
@@ -58,6 +59,159 @@ class LLMServerSettingsTests(unittest.TestCase):
 
 
 class ModelWiringTests(unittest.IsolatedAsyncioTestCase):
+    async def test_compound_turn_scopes_two_rumors_and_keeps_independent_answers(self):
+        self.enterContext(patch.dict(os.environ, {"CLOUD_RUMOR_OFFICIAL_DOMAINS": "campus.example.test"}))
+        gate = "核实明天南门是否封闭"
+        library = "核实后天图书馆是否临时闭馆"
+        general = "解释什么是学分"
+        compared = "比较两项核验结果"
+        followup = "复述核实后确定关闭的校门"
+        query = "听说明天南门封闭、后天图书馆临时闭馆。比较两项核验结果，并告诉我核实后确定关闭的是哪个门。顺便解释学分。"
+        segments = [
+            {"query": gate, "route": {"verify_change": True}},
+            {"query": library, "route": {"verify_change": True}},
+            {"query": compared, "depends_on": [1, 2], "route": {"direct": True}},
+            {"query": followup, "depends_on": [1], "route": {"direct": True}},
+            {"query": general, "route": {"general": True}},
+        ]
+        called = []
+        test = self
+
+        async def assess(_context, args):
+            called.append(args.text)
+            verified = args.text == gate
+            evidence = {"provenance": "official_article", "relation": "supported",
+                        "url": "https://campus.example.test/notices/fictional", "published": "2026-11-15",
+                        "quote": "南门明日关闭。"}
+            return ToolResult(json.dumps({"state": "assessed", "verification": [
+                {"state": "supported", "official_evidence": [evidence]},
+            ] if verified else []}, ensure_ascii=False), "success")
+
+        class Model:
+            async def complete(self, messages, tools):
+                instructions = messages[0].content
+                if instructions.startswith("你负责校园智能体路由的范围判断"):
+                    return Message("assistant", '{"compound":true}')
+                if instructions.startswith("你负责校园智能体路由。"):
+                    return Message("assistant", json.dumps({"parts": segments}, ensure_ascii=False))
+                if instructions.startswith(REVIEW_INSTRUCTIONS):
+                    rules = json.loads(messages[-1].content)["rules"]
+                    return Message("assistant", json.dumps({
+                        "rule_checks": [{"rule_id": rule["id"], "status": "pass", "reason": "符合"} for rule in rules],
+                        "claims": [], "issues": [],
+                    }))
+                if instructions == GENERAL_ANSWER_INSTRUCTIONS:
+                    test.assertEqual(messages[-1].content, general)
+                    return Message("assistant", "学分用于记录课程学习量。")
+                if Message("system", MAIN_ANSWER_INSTRUCTIONS) in messages:
+                    if messages[-1].content == followup:
+                        test.assertTrue(any("南门明日关闭" in item.content for item in messages))
+                        return Message("assistant", "确认关闭的校门是南门。")
+                    test.assertIn(messages[-1].content, (gate, library))
+                    return Message("assistant", "南门明日关闭。" if messages[-1].content == gate else "图书馆闭馆时间待核实。")
+                target = next(item.content for item in reversed(messages) if item.role == "user")
+                if messages[-1].role != "tool":
+                    return Message("assistant", tool_calls=[ToolCall("assess", CAMPUS_RUMOR.name, {"text": target})])
+                return Message("assistant", "结论为有证据支持\n南门明日关闭。" if target == gate
+                               else "结论为证据不足\n图书馆闭馆时间待核实。")
+
+        role = AgentId.RUMOR_ASSESSMENT
+        skill = replace(CAMPUS_RUMOR, handler=assess)
+        runner = CampusRunner.with_model(Model(), skills_factory=lambda _: SkillRegistry({role: (skill,)}))
+        with patch("main_agent.cloud.runner.load_subagent_capabilities", side_effect=lambda catalog: catalog):
+            output = await runner.run(ExecutionContext(uuid4(), uuid4(), uuid4(), uuid4(), query, (), ()))
+        self.assertCountEqual(called, [gate, library])
+        self.assertEqual([step["agent_id"] for step in output.steps], [role.value, role.value])
+        self.assertEqual(len({step["step_id"] for step in output.steps}), 2)
+        self.assertEqual(output.result_status, "partial")
+        for expected in ("南门明日关闭", "图书馆闭馆时间待核实", "等第 2 项核实", "确认关闭的校门是南门", "学分用于记录"):
+            self.assertIn(expected, output.content)
+
+    async def test_compound_turn_preserves_read_results_and_action_confirmation(self):
+        general = "解释什么是预约"
+        writes = [
+            {"query": "取消体育馆预约 G42", "route": {"campus_action": {"action": "gym.close", "target": "G42"}}},
+            {"query": "借阅《样例馆藏》", "route": {"campus_action": {"action": "library.start", "target": "样例馆藏"}}},
+        ]
+        previews = []
+
+        class CampusChat:
+            def read_handlers(self, _context):
+                return {}
+
+            async def discover(self, _context, catalog):
+                return scope_actions(catalog, "student", {CAMPUS_ACTION.name: {"gym.close", "library.start"}})
+
+            async def run_action(self, context, plan, _agent, *, confirm_first):
+                previews.append((context.query, plan.target, confirm_first))
+                return AgentReply(Status.NEEDS_INPUT, "请回复「确认办理」。", reason=CAMPUS_ACTION_CONFIRMATION), plan
+
+        class Model:
+            async def complete(self, messages, tools):
+                instructions = messages[0].content
+                if instructions.startswith("你负责校园智能体路由的范围判断"):
+                    return Message("assistant", '{"compound":true}')
+                if instructions.startswith("你负责校园智能体路由。"):
+                    query = json.loads(messages[-1].content)["query"]
+                    parts = [{"query": general, "route": {"general": True}}]
+                    parts += writes if "借阅" in query else writes[:1]
+                    return Message("assistant", json.dumps({"parts": parts}, ensure_ascii=False))
+                if instructions.startswith(REVIEW_INSTRUCTIONS):
+                    return Message("assistant", json.dumps({
+                        "rule_checks": [{"rule_id": rule["id"], "status": "pass", "reason": "符合"}
+                                        for rule in json.loads(messages[-1].content)["rules"]],
+                        "claims": [], "issues": [],
+                    }))
+                return Message("assistant", "预约是预先约定时间。")
+
+        runner = CampusRunner.with_model(Model(), campus_chat=CampusChat())
+        query = "解释什么是预约，并帮我取消体育馆预约 G42"
+        context = ExecutionContext(uuid4(), uuid4(), uuid4(), uuid4(), query, (), ())
+        with patch("main_agent.cloud.runner.load_subagent_capabilities", side_effect=lambda catalog: catalog):
+            many = await runner.run(replace(context, query=query + "，还请借阅《样例馆藏》"))
+            self.assertFalse(previews)
+            self.assertIn("预约是预先约定时间", many.content)
+            self.assertIn("请先选择一项办理", many.content)
+            one = await runner.run(context)
+        self.assertEqual(previews, [(query, "G42", True)])
+        self.assertIn("预约是预先约定时间", one.content)
+        self.assertIn("确认办理", one.content)
+        self.assertEqual(one.steps[0]["result"]["compound_reply"], one.content)
+
+    async def test_compound_timeout_keeps_the_completed_answer(self):
+        quick = "描述北斗七星的排列"
+        slow = "解释潮汐的成因"
+
+        class Model:
+            async def complete(self, messages, tools):
+                instructions = messages[0].content
+                if instructions.startswith("你负责校园智能体路由的范围判断"):
+                    return Message("assistant", '{"compound":true}')
+                if instructions.startswith("你负责校园智能体路由。"):
+                    return Message("assistant", json.dumps({"parts": [
+                        {"query": query, "route": {"general": True}} for query in (slow, quick)
+                    ]}))
+                if messages[-1].content == slow:
+                    await asyncio.Event().wait()
+                return Message("assistant", "这七颗星的排列像一把斗勺。")
+
+        runner = CampusRunner.with_model(Model())
+        real_factory = runner.cluster_factory
+
+        def cluster_factory(context):
+            cluster = real_factory(context)
+            cluster.config = replace(cluster.config, step_timeout=0.08)
+            return cluster
+
+        runner.cluster_factory = cluster_factory
+        with patch("main_agent.cloud.runner.load_subagent_capabilities", side_effect=lambda catalog: catalog):
+            output = await runner.run(ExecutionContext(
+                uuid4(), uuid4(), uuid4(), uuid4(), f"{slow}，再{quick}", (), (),
+            ))
+        self.assertEqual(output.result_status, "partial")
+        self.assertIn("这部分查询超时", output.content)
+        self.assertIn("这七颗星的排列像一把斗勺", output.content)
+
     async def test_search_followup_keeps_the_original_goal_through_routing_and_answering(self):
         query = "对的，国家奖学金"
         resolved = "今年本科生国家奖学金获奖名单"
@@ -232,6 +386,8 @@ class ModelWiringTests(unittest.IsolatedAsyncioTestCase):
 
         class Model:
             async def complete(self, messages, tools):
+                if messages[0].content.startswith("你负责校园智能体路由的范围判断"):
+                    return Message("assistant", '{"verification_guidance":true}')
                 calls.append((messages[0].content, tools))
                 return Message("assistant", answer)
 
@@ -606,7 +762,7 @@ class ModelWiringTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.artifacts[0]["payload"]["general"])
         self.assertEqual([tools for _, tools in calls], [[], []])
         self.assertIn("严格、保守", calls[0][0][0].content)
-        self.assertIn("混合问题也按校园任务处理", calls[0][0][0].content)
+        self.assertIn("包含通用问题或需要查询后再办理", calls[0][0][0].content)
         self.assertEqual(calls[1][0][1], Message("system", MAIN_AGENT_PERSONA))
         self.assertEqual([message.content for message in calls[1][0][2:]], ["请帮我做一道计算题。", query])
 

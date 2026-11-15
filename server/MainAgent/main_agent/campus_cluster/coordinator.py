@@ -10,7 +10,7 @@ from dataclasses import asdict, replace
 from ..reliability.models import RunSnapshot
 from .contracts import (
     AgentId, AgentReply, AgentTask, ClusterConfig, ClusterError, ClusterRequest, ClusterResult,
-    ClusterTimeoutError, RoutePlan, Status, StepResult, UpstreamOutput,
+    ClusterTimeoutError, RoutePlan, Status, StepResult, UpstreamOutput, aggregate_status,
 )
 from .registry import AgentRegistry
 from .routing import ExplicitRouter, Router, validate_plan
@@ -43,7 +43,8 @@ class CampusCluster:
 
     async def run(
         self, request: ClusterRequest, *, on_dispatch: Callable[[AgentId], None] | None = None,
-        step_activity: StepActivity | None = None,
+        step_activity: StepActivity | None = None, prepared_plan: RoutePlan | None = None,
+        step_capacity: asyncio.Semaphore | None = None,
     ) -> ClusterResult:
         if not isinstance(request, ClusterRequest):
             raise ValueError("request 必须是 ClusterRequest")
@@ -57,9 +58,11 @@ class CampusCluster:
         plan = RoutePlan()
         try:
             async with asyncio.timeout(self.config.total_timeout):
-                plan = deepcopy(await self.router.route(deepcopy(request), self.registry.profiles))
+                if prepared_plan is None:
+                    prepared_plan = await self.router.route(deepcopy(request), self.registry.profiles)
+                plan = deepcopy(prepared_plan)
                 validate_plan(plan, max_steps=self.config.max_steps)
-                if plan.direct:
+                if plan.direct or plan.parts:
                     return ClusterResult(request.conversation_id, Status.COMPLETED, plan)
                 if plan.campus_action is not None:
                     return ClusterResult(request.conversation_id, Status.NEEDS_INPUT, plan)
@@ -74,18 +77,18 @@ class CampusCluster:
                     )
                 if plan.service_guide is not None:
                     request = replace(request, evidence=(*request.evidence, plan.service_guide))
-                await self._execute(request, plan, results, on_dispatch, step_activity)
+                capacity = step_capacity if step_capacity is not None else asyncio.Semaphore(self.config.max_parallel)
+                await self._execute(request, plan, results, capacity, on_dispatch, step_activity)
         except TimeoutError as exc:
             raise ClusterTimeoutError(self._ordered(plan, results)) from exc
         except asyncio.CancelledError as exc:
             exc.results = self._ordered(plan, results)
             raise
         ordered = self._ordered(plan, results)
-        return ClusterResult(request.conversation_id, self._aggregate(ordered), plan, ordered)
+        return ClusterResult(request.conversation_id, aggregate_status({item.reply.status for item in ordered}), plan, ordered)
 
-    async def _execute(self, request, plan, results, on_dispatch, step_activity):
+    async def _execute(self, request, plan, results, semaphore, on_dispatch, step_activity):
         pending = {step.id: step for step in plan.steps}
-        semaphore = asyncio.Semaphore(self.config.max_parallel)
         while pending:
             ready = [step for step in pending.values() if set(step.depends_on) <= results.keys()]
             if not ready:
@@ -161,15 +164,3 @@ class CampusCluster:
     @staticmethod
     def _ordered(plan, results):
         return tuple(results[step.id] for step in plan.steps if step.id in results)
-
-    @staticmethod
-    def _aggregate(results):
-        states = {result.reply.status for result in results}
-        if states == {Status.COMPLETED}:
-            return Status.COMPLETED
-        if Status.COMPLETED in states or Status.PARTIAL in states:
-            return Status.PARTIAL
-        for status in (Status.NEEDS_CONFIGURATION, Status.NEEDS_INPUT, Status.INSUFFICIENT_EVIDENCE):
-            if status in states:
-                return status
-        return Status.FAILED

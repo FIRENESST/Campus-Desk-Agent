@@ -412,7 +412,7 @@ class PostgresStore:
                 s.result->'classroom_source' AS classroom_source,
                 s.result->>'classroom_confirmation'='true' AS classroom_confirmation,
                 s.result->>'classroom_target' AS classroom_target,
-                s.result->>'content' AS campus_action_reply,
+                COALESCE(s.result->>'compound_reply',s.result->>'content') AS campus_action_reply,
                 CASE WHEN s.status='needs_input' AND r.status='succeeded'
                     THEN s.result->'pending_campus_action' END AS pending_campus_action
                 FROM messages m LEFT JOIN runs r ON r.id=m.run_id

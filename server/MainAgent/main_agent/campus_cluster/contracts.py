@@ -31,6 +31,17 @@ class Status(str, Enum):
     FAILED = "failed"
 
 
+def aggregate_status(states: set[Status]) -> Status:
+    if states == {Status.COMPLETED}:
+        return Status.COMPLETED
+    if Status.COMPLETED in states or Status.PARTIAL in states:
+        return Status.PARTIAL
+    for status in (Status.NEEDS_CONFIGURATION, Status.NEEDS_INPUT, Status.INSUFFICIENT_EVIDENCE):
+        if status in states:
+            return status
+    return Status.FAILED
+
+
 class RumorVerdict(str, Enum):
     SUPPORTED = "supported"
     REFUTED = "refuted"
@@ -99,6 +110,13 @@ class WorkStep:
 
 
 @dataclass(frozen=True)
+class QuestionPart:
+    query: str
+    plan: "RoutePlan"
+    depends_on: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True)
 class RoutePlan:
     steps: tuple[WorkStep, ...] = ()
     clarification: str | None = None
@@ -110,6 +128,7 @@ class RoutePlan:
     resolved_query: str | None = None
     campus_threat: bool = False
     timetable_query: "CampusTimetableInput | None" = None
+    parts: tuple[QuestionPart, ...] = ()
 
 
 @dataclass(frozen=True)

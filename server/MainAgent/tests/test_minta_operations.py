@@ -1305,6 +1305,7 @@ class CampusOperationsTests(test_cloud.CloudPostgresTestCase):
 
         request = "把刚才那本借给我十二天吧。"
         natural_confirmation = "按刚才展示的《馆藏》借阅提交吧。"
+        followup = "解释什么是归还期限"
 
         async def complete(messages, tools):
             self.assertEqual(tools, [])
@@ -1322,13 +1323,20 @@ class CampusOperationsTests(test_cloud.CloudPostgresTestCase):
                 return Message("assistant", '{"decision":"other"}')
             if "范围判断" in system:
                 query = json.loads(messages[-1].content)["query"]
+                if followup in query:
+                    return Message("assistant", '{"compound":true}')
                 return Message("assistant", '{"campus":true}' if query == request else '{"general":true}')
             if system.startswith("你负责校园智能体路由。"):
                 self.assertIn("library.start", system)
                 self.assertIn("想借的书是《馆藏》", messages[-1].content)
+                if followup in json.loads(messages[-1].content)["query"]:
+                    return Message("assistant", json.dumps({"parts": [
+                        {"query": "归还《馆藏》", "route": {"campus_action": planned}},
+                        {"query": followup, "route": {"general": True}},
+                    ]}, ensure_ascii=False))
                 return Message("assistant", json.dumps({"campus_action": planned}))
             if system.startswith("你是中传校园助手。结合本轮请求"):
-                return Message("assistant", "好的。")
+                return Message("assistant", "归还期限是最迟还书日期。" if messages[-1].content == followup else "好的。")
             self.assertTrue(system.startswith("你是独立的答案评审器"), system)
             review = json.loads(messages[-1].content)
             candidate = json.loads(review["answer"])
@@ -1393,9 +1401,11 @@ class CampusOperationsTests(test_cloud.CloudPostgresTestCase):
             self.assertEqual([write[:2] for write in self.gateway.writes], [("library", OPERATIONS["library"].create)])
             self.assertEqual(self.gateway.writes[0][2]["duration_days"], 12)
 
-            request = "麻烦把《馆藏》还回去。"
+            request = f"麻烦把《馆藏》还回去，并{followup}。"
             planned = {**planned, "action": "library.close", "arguments": {}}
             pending = await ask(conversation, request)
+            self.assertEqual(pending["result_status"], "partial", pending)
+            self.assertIn("归还期限是最迟还书日期", pending["messages"][-1]["content"])
             self.assertIn("「确认」", pending["messages"][-1]["content"])
             completed = await ask(conversation, "确认。")
             self.assertEqual(completed["result_status"], "completed", completed)
