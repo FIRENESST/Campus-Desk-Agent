@@ -6,10 +6,12 @@ import unicodedata
 from datetime import datetime
 
 from ..campus_cluster.action_plan import CAMPUS_TIME_ZONE, CampusActionPlan
-from ..campus_cluster.subskills.minta_campus import redact_classroom_contact
+from ..campus_cluster.activity_time import campus_datetime
+from ..campus_cluster.contracts import Status
+from ..campus_cluster.subskills.minta_campus import name_key, redact_classroom_contact
 from ..core import AgentError, Message
 from ..reliability.checks import review_findings
-from ..reliability.models import ReviewContext, Rule
+from ..reliability.models import Evidence, ReviewContext, Rule
 
 
 ACTION_INTENT_RULE = Rule(
@@ -17,6 +19,7 @@ ACTION_INTENT_RULE = Rule(
     "核对拟办动作、对象和参数是否符合用户本轮的明确委托或同一事项的补充。"
     "把礼貌地请你帮忙办理的问句理解为委托，结合上下文区分发起办理与询问规则。"
     "允许缺少待追问的字段。参数应来自用户消息，不能采用助手举的例子。"
+    "如果本轮明确选择了前文场馆时段表中的一项，允许用随附的服务记录补齐该行的场馆、日期及起止时间。"
     "教室预约的时段以及体育馆预约的日期、场地号和时间可按北京时间规范化。核对与用户所选一致。"
     "复用前文参数时，本轮必须明确接续同一事项。历史中的委托或确认不能代替本轮的意思。"
     "用户只是咨询、转述、否认或说算了，未选择多项中的哪一项，或计划忽略了不支持的附加条件时，不通过。"
@@ -98,7 +101,44 @@ def plan_matches_message(plan: CampusActionPlan, query: str, history) -> bool:
                any(unicodedata.normalize("NFKC", value) in text for text in texts) for value in values)
 
 
-async def review_campus_action(reviewer, context, plan: CampusActionPlan, *, confirmation=None) -> bool:
+def recent_gym_slots(history) -> tuple[dict[str, str], ...]:
+    """Read the last displayed timetable, also allowing a follow-up to a clarification."""
+    for item in reversed(history):
+        if item["role"] != "assistant":
+            continue
+        tables = item.get("gym_timetables")
+        if tables:
+            slots = {}
+            for rows in tables:
+                for row in rows or ():
+                    if row.get("kind") != "gym":
+                        continue
+                    start, end = (campus_datetime(row[key]).astimezone(CAMPUS_TIME_ZONE)
+                                  for key in ("starts_at", "ends_at"))
+                    slot = {
+                        "venue_id": row["resource_id"], "venue_name": row["name"],
+                        "court_id": str(row["court_id"]), "court_name": row["location"],
+                        "date": start.date().isoformat(), "start_time": f"{start:%H:%M}",
+                        "end_time": "24:00" if start.date() < end.date() and end.hour == end.minute == 0 else f"{end:%H:%M}",
+                    }
+                    slots[tuple(slot[key] for key in ("venue_id", "date", "court_id", "start_time", "end_time"))] = slot
+            return tuple(slots.values())
+        if item.get("reply_status") != Status.NEEDS_INPUT.value:
+            break
+    return ()
+
+
+def matching_gym_slots(plan: CampusActionPlan, slots: tuple[dict[str, str], ...]) -> tuple[dict[str, str], ...]:
+    if not plan.arguments.keys() & {"court_id", "start_time", "end_time"}:
+        return ()
+    target = name_key(plan.target).replace(" ", "")
+    return tuple(slot for slot in slots if all(slot.get(key) == value for key, value in plan.arguments.items()) and
+                 (not target or target == name_key(slot["venue_id"]) or
+                  target == name_key(slot["court_name"]).replace(" ", "") or
+                  target in name_key(slot["venue_name"]).replace(" ", "")))
+
+
+async def review_campus_action(reviewer, context, plan: CampusActionPlan, *, confirmation=None, gym_slot=None) -> bool:
     classroom = plan.action == "classroom.start"
     if confirmation is None:
         rule, proposal = ACTION_INTENT_RULE, _model_plan(plan)
@@ -107,11 +147,14 @@ async def review_campus_action(reviewer, context, plan: CampusActionPlan, *, con
     instruction = "请根据会话和最后一条用户消息，按所给规则审核这次校园办理意图。"
     if confirmation is None and plan.action in {"gym.start", "gym.close", "classroom.start", "classroom.close"}:
         instruction += f"今天是北京时间 {datetime.now(CAMPUS_TIME_ZONE):%Y-%m-%d}，按此日期理解本轮的相对时间。"
+    evidence = () if gym_slot is None else (Evidence(
+        "gym-slot", json.dumps(gym_slot, ensure_ascii=False), "前文已展示的场馆时段表", status="success",
+    ),)
     check = ReviewContext(
         messages=(Message("system", instruction),
                   *model_dialog_history(context.history),
                   Message("user", redact_classroom_contact(context.query, pending=classroom))),
-        rules=(rule,), evidence=(),
+        rules=(rule,), evidence=evidence,
         answer=json.dumps(proposal, ensure_ascii=False),
     )
     try:

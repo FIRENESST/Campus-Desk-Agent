@@ -966,6 +966,93 @@ class CampusOperationsTests(test_cloud.CloudPostgresTestCase):
             self.assertEqual(self.gateway.writes[0][2]["slot_id"], "2026-11-14_1_0900")
             self.assertEqual(len(self.gateway.writes), 1)
 
+    async def test_gym_chat_can_book_a_slot_from_its_own_timetable(self):
+        headers, _ = await self.account()
+        instance, conversation = await self.conversation(headers)
+        other = (await self.client.post(f"/v1/instances/{instance['id']}/conversations", json={}, headers=headers)).json()
+        day = (datetime.now(UTC) + timedelta(hours=8, days=1)).date().isoformat()
+        lookup = "现在有乒乓球馆吗"
+        selection = "我要预定4号桌的9点到10点"
+        court_only = "我要预定4号桌"
+        wrong_range = f"我要预约{day}室内乒乓球馆4号桌的9点到11点"
+        original = self.gateway.request
+
+        async def gateway_request(method, path):
+            if path == "/gym/api/venues":
+                return {"venues": [{"id": "table-tennis", "name": "室内乒乓球馆", "capacity": 4,
+                                    "remaining": 4, "court_count": 4}],
+                        "booking_window": {"first_date": day, "last_date": day}}
+            if urlsplit(path).path == "/gym/api/slots":
+                slots = [self.gateway.slot(day, court, clock)
+                         for court, clock in (("2", "0900"), ("4", "0900"), ("4", "1000"))]
+                return {"slots": [{**slot, "court_name": slot["court_id"] + " 号桌"} for slot in slots]}
+            return await original(method, path)
+
+        route_inputs = []
+
+        async def complete(messages, tools):
+            self.assertEqual(tools, [])
+            system = messages[0].content
+            payload = json.loads(messages[-1].content)
+            if system.startswith("你是 MainAgent。"):
+                return Message("assistant", '{"decision":"other"}')
+            if "范围判断" in system:
+                return Message("assistant", '{"campus":true}')
+            if system.startswith("你负责校园智能体路由。"):
+                route_inputs.append(payload)
+                if payload["query"] == lookup:
+                    route = {"timetable_query": {"service": "gym", "target": "乒乓球馆", "date": day}}
+                else:
+                    self.assertIn(payload["query"], (selection, court_only, wrong_range))
+                    arguments = {"court_id": "4"}
+                    if payload["query"] != court_only:
+                        arguments.update(start_time="09:00", end_time="10:00")
+                    target = "table-tennis"
+                    if payload["query"] == wrong_range:
+                        target = "室内乒乓球馆"
+                        arguments.update(date=day, end_time="11:00")
+                    route = {"campus_action": {"action": "gym.start", "target": target, "arguments": arguments}}
+                return Message("assistant", json.dumps(route, ensure_ascii=False))
+            self.assertEqual([rule["id"] for rule in payload["rules"]], ["campus.action_plan"])
+            proposal = json.loads(payload["answer"])
+            if proposal["target"] == "table-tennis":
+                slot = json.loads(payload["evidence"][0]["content"])
+                self.assertEqual((slot["venue_id"], slot["date"], slot["court_id"]), ("table-tennis", day, "4"))
+            return action_review("pass")
+
+        async def local_capabilities(registrations):
+            return registrations
+
+        runner = CampusRunner.with_model(SimpleNamespace(complete=complete),
+                                         campus_chat=CampusChat(self.app.state.campus_ops, self.app.state.auth))
+        worker = WorkerPool(self.store, runner, self.config)
+
+        async def ask(chat, query):
+            sent = await self.submit(headers, chat, query=query)
+            self.assertEqual(sent.status_code, 202, sent.text)
+            await worker.process(await self.store.claim())
+            return (await self.client.get(f"/v1/runs/{sent.json()['id']}", headers=headers)).json()
+
+        with (patch.object(self.gateway, "request", gateway_request),
+              patch("main_agent.cloud.runner.load_subagent_capabilities", local_capabilities)):
+            table = await ask(conversation, lookup)
+            self.assertEqual(table["result_status"], "completed", table)
+            self.assertIn("室内乒乓球馆 · 4 号桌", table["messages"][-1]["content"])
+            self.assertEqual((await ask(other, selection))["result_status"], "needs_input")
+            self.assertNotIn("recent_gym_slots", route_inputs[-1])
+            ambiguous = await ask(conversation, court_only)
+            self.assertIn("请补充时段", ambiguous["messages"][-1]["content"])
+            mismatch = await ask(conversation, wrong_range)
+            self.assertIn("到 10:00 结束", mismatch["messages"][-1]["content"])
+            preview = await ask(conversation, selection)
+            self.assertEqual(len(route_inputs[-1]["recent_gym_slots"]), 3)
+            self.assertIn(f"室内乒乓球馆 · 4 号桌 · {day} 09:00–10:00", preview["messages"][-1]["content"])
+            self.assertIn("确认预约", preview["messages"][-1]["content"])
+            self.assertFalse(self.gateway.writes)
+            completed = await ask(conversation, "确认预约")
+            self.assertEqual(completed["result_status"], "completed", completed)
+            self.assertEqual([args["slot_id"] for _, _, args in self.gateway.writes], [f"{day}_4_0900"])
+
     async def test_library_search_and_account_loans_are_available_in_the_bound_skill(self):
         self.gateway.books.extend(
             {"id": f"book-{index}", "title": f"Python 编程 {index}", "author": "Eric Matthes",

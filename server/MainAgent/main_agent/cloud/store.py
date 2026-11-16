@@ -400,6 +400,12 @@ class PostgresStore:
                 raise not_found()
             history = connection.execute(
                 """SELECT m.role,m.content,
+                CASE WHEN m.role='assistant' AND r.status='succeeded' AND r.finished_at<=%s
+                    THEN r.result_status END AS reply_status,
+                CASE WHEN m.role='assistant' AND r.status='succeeded' AND r.finished_at<=%s THEN (
+                    SELECT jsonb_agg(a.payload->'rows' ORDER BY a.id) FROM run_artifacts a
+                    WHERE a.run_id=r.id AND a.kind='timetable' AND a.payload->>'service'='gym'
+                ) END AS gym_timetables,
                 s.step_id IS NOT NULL OR (
                     m.role='user' AND r.finished_at<=%s
                     AND EXISTS (SELECT 1 FROM chat_turn_effects e WHERE e.run_id=r.id)
@@ -421,7 +427,8 @@ class PostgresStore:
                 WHERE m.conversation_id=%s AND m.role IN ('user','assistant') AND r.withdrawn_at IS NULL
                 AND m.run_id IS DISTINCT FROM %s AND (%s::bigint IS NULL OR m.id<%s)
                 ORDER BY m.id DESC LIMIT 40""",
-                (context["created_at"], context["created_at"], context["conversation_id"], context["run_id"],
+                (context["created_at"], context["created_at"], context["created_at"], context["created_at"],
+                 context["conversation_id"], context["run_id"],
                  context["turn_start"], context["turn_start"]),
             ).fetchall()
             bounded, characters = [], 0

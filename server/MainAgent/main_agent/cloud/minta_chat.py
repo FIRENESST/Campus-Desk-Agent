@@ -540,6 +540,12 @@ class CampusChat:
         slot = next((slot for slot in slots if slot["slot_id"] == slot_id and slot["remaining"] > 0), None)
         if not slot:
             raise ServiceError(409, "gym_slot_unavailable", f"「{item['name']}」的这个场地时段已满或不可预约，请重新选择场地或时间。")
+        if end_time := fields.get("end_time"):
+            end = datetime.fromisoformat(slot["ends_at"]).astimezone(CAMPUS_TIME_ZONE)
+            actual_end = "24:00" if day != end.date().isoformat() and end.hour == end.minute == 0 else f"{end:%H:%M}"
+            if end_time != actual_end:
+                raise ServiceError(422, "gym_slot_time_mismatch",
+                                   f"这个场地 {clock} 开始的时段到 {actual_end} 结束，请选择要预约的时段。")
         return slot_id, gym_slot_label(slot)
 
     async def manage(self, context, who, intent, *, confirm_first=False):

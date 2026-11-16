@@ -87,12 +87,17 @@ CAMPUS_ACTION_PLAN_RULES = (
     "用户明确请你办理一项校务且给出了对象和参数时，输出"
     ' {"campus_action":{"action":"动作 ID","target":"用户给出的名称或编号","arguments":{}}}。'
     "action 必须来自校园服务清单，arguments 的键来自该动作的 arguments 字段。"
-    "对象和参数逐字取自用户消息。只有本轮明确指代前文的同一事项时，才复用最近几轮中用户给出的值。"
+    "对象和参数取自用户消息。只有本轮明确指代前文的同一事项时，才复用最近几轮中用户给出的值。"
     "教室预约把明确的开始和结束时间按北京时间规范为 starts_at、ends_at（YYYY-MM-DDTHH:MM），"
     "相对日期以 campus_today 为准。缺少时间时省略相应的键。取消时可用预约编号或注明原开始时间。"
     "借书时如有借期，duration_days 写用户原文中的天数，例如「五天」。没有指定借期就省略这个参数。"
     "体育馆预约请把场馆名称或编号放在 target，把用户明确选择的日期、开始时间、场地号规范为 date（YYYY-MM-DD）、"
-    "start_time（24 小时 HH:MM）、court_id（场地号码，如 2）；相对日期以载荷中的 campus_today 为准。"
+    "start_time、end_time（24 小时 HH:MM）、court_id（场地号码，如 2）；相对日期以载荷中的 campus_today 为准。"
+    "recent_gym_slots 是前文实际展示过的场馆时段。用户明确从中选择时，沿用所选行的场馆和日期，target 使用 venue_id。"
+    "如前文已列出羽毛球场的时段，本轮「订 3 号场下午两点到三点」是选择该表中的时段，输出 gym.start，"
+    "带上 court_id=3、start_time=14:00、end_time=15:00。唯一匹配时可补齐场馆和日期。"
+    "用户只选了场地号或时段时，保留已选字段。剩余字段从唯一匹配的记录补齐，有多个候选时省略无法确定的字段。"
+    "用户明确给出的新条件优先。"
     "已发起体育馆预约时，即使只知道部分资料也输出 gym.start 结构化计划，缺少场馆时 target 用空字符串。"
     "可从同一预约的上下文补齐，缺什么就省略什么。用户只补充场地号等信息时继续该预约。"
     "取消体育馆预约可用预约记录 ID；使用场馆名称时可以补充同样的日期、开始时间和场地号。"
@@ -257,7 +262,7 @@ class LLMRouter:
         self, llm: LLMClient, *, feedback: RoutingFeedback | None = None,
         allow_direct: bool = False, direct_context: str = "",
         capabilities: Callable[[tuple[AgentProfile, ...]], Awaitable[list[dict]]] | None = None,
-        allow_action_plans: bool = False,
+        allow_action_plans: bool = False, gym_slots: tuple[dict[str, str], ...] = (),
     ):
         self.llm = llm
         self.feedback = feedback
@@ -265,6 +270,7 @@ class LLMRouter:
         self.direct_context = direct_context
         self.capabilities = capabilities
         self.allow_action_plans = allow_action_plans
+        self.gym_slots = gym_slots
 
     async def route(self, request: ClusterRequest, catalog: tuple[AgentProfile, ...]) -> RoutePlan:
         if request.targets and not self.allow_direct:
@@ -314,15 +320,17 @@ class LLMRouter:
             return replace(plan, resolved_query=resolved_query)
         return plan
 
-    @staticmethod
-    def _payload(request):
-        return {
+    def _payload(self, request):
+        payload = {
             "query": request.query,
             "history": [
                 {"role": item.role, "content": item.content}
                 for item in request.history if item.role in {"user", "assistant"}
             ],
         }
+        if self.gym_slots:
+            payload["recent_gym_slots"] = self.gym_slots
+        return payload
 
     async def _scope(self, payload):
         policy_scope = (
@@ -338,6 +346,7 @@ class LLMRouter:
                 f"{OFFICIAL_SOURCE_ROUTE_RULES}"
                 f"{policy_scope}"
                 '查具体日期的教室空闲、场馆余量、活动时段、授课、个人日程或图书到期时，输出 {"campus":true}。'
+                '用户接着 recent_gym_slots 选择桌号或时段并发起预约时，输出 {"campus":true}。'
                 '凡是涉及或无法排除需要校园资料或校内业务的任务，输出 {"campus":true}。'
                 '用户要查询学校公众号名称、查询公众号文章或读取公众号正文时，输出 {"wechat_lookup":true}。'
                 "如果本轮在补充一个已经明确的校内查询，把完整查询写入同一个 JSON 的 resolved_query 字段。"

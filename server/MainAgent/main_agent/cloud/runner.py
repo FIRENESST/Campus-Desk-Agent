@@ -14,7 +14,7 @@ from ..campus_cluster import (
     AgentId, AgentProfile, ClusterRequest, LLMRouter, ReliableAgentBackend, Router, RoutingFeedback, RumorVerdict,
     SkillRegistry, Status, build_campus_cluster,
 )
-from ..campus_cluster.action_plan import CAMPUS_ACTION_CONFIRMATION
+from ..campus_cluster.action_plan import CAMPUS_ACTION_CONFIRMATION, CampusActionPlan
 from ..campus_cluster.agents.rumor_assessment import (
     PROFILE as RUMOR_ASSESSMENT_PROFILE, RUMOR_VERDICT_RULE, RumorVerdictCheck, parse_rumor_verdict,
 )
@@ -44,7 +44,8 @@ from ..reliability import (
 )
 from ..reliability.review import structured_receipt
 from .campus_planning import (
-    last_answered_user, pending_campus_action, pending_confirmation_context, plan_matches_message, review_campus_action,
+    last_answered_user, matching_gym_slots, pending_campus_action, pending_confirmation_context, plan_matches_message,
+    recent_gym_slots, review_campus_action,
 )
 from .classroom_dialog import (
     CLARIFY_CAMPUS_TURN, CONFIRM_PENDING, ClassroomTurn, classroom_draft, classroom_route_turn, plan_campus_turn,
@@ -344,6 +345,7 @@ class CampusRunner:
             routing = router_factory(context) if router_factory is not None else LLMRouter(
                 llm, feedback=routing_feedback, allow_direct=True,
                 capabilities=capabilities, allow_action_plans=campus_chat is not None,
+                gym_slots=recent_gym_slots(context.history) if campus_chat else (),
             )
             cluster = build_campus_cluster(backends=backends, router=routing)
             cluster.registry.get(AgentId.CAMPUS_SERVICES).skill_registry = registries[AgentId.CAMPUS_SERVICES]
@@ -518,7 +520,21 @@ class CampusRunner:
                 classroom = classroom_route_turn(context.query, proposal)
                 if classroom is not None:
                     return await self._run_classroom(context, cluster, classroom)
-            elif plan_matches_message(proposal, context.query, context.history):
+            if proposal.action == "gym.start":
+                slots = matching_gym_slots(proposal, recent_gym_slots(context.history))
+                if len(slots) == 1:
+                    slot = slots[0]
+                    selected = CampusActionPlan(action=proposal.action, target=slot["venue_id"], arguments={
+                        key: slot[key] for key in ("date", "court_id", "start_time", "end_time")
+                    })
+                    return await self._run_action(context, cluster, selected, confirm_first=True, review=True, gym_slot=slot)
+                if slots:
+                    options = (("场馆", ("venue_id",)), ("日期", ("date",)), ("场地号", ("court_id",)),
+                               ("时段", ("start_time", "end_time")))
+                    fields = [label for label, keys in options
+                              if len({tuple(slot[key] for key in keys) for slot in slots}) > 1]
+                    return RunOutput(f"前面的时段表里有多个符合的选项，请补充{'和'.join(fields)}。", Status.NEEDS_INPUT.value)
+            if proposal.action != "classroom.start" and plan_matches_message(proposal, context.query, context.history):
                 return await self._run_action(context, cluster, proposal, confirm_first=True, review=True)
             return RunOutput("请补充要办理的具体对象和所需信息。", Status.NEEDS_INPUT.value)
         profiles = {profile.id: profile.name for profile in cluster.registry.profiles}
@@ -792,10 +808,12 @@ class CampusRunner:
             classroom_source=classroom.source,
         )
 
-    async def _run_action(self, context, cluster, plan, *, confirm_first=False, review=False, classroom_source=None):
+    async def _run_action(self, context, cluster, plan, *, confirm_first=False, review=False, classroom_source=None,
+                          gym_slot=None):
         if context.attempt > 1 and not confirm_first and plan.target and plan.action != "classroom.start":
             return self._previous_action_output(context)
-        if review and (self.action_reviewer is None or not await review_campus_action(self.action_reviewer, context, plan)):
+        if review and (self.action_reviewer is None or
+                       not await review_campus_action(self.action_reviewer, context, plan, gym_slot=gym_slot)):
             return RunOutput("请确认你想办理的事项，并写明具体对象。", Status.NEEDS_INPUT.value)
         agent = cluster.registry.get(AgentId.CAMPUS_SERVICES)
         activity = context.step_activity("minta-action", agent.profile.id) if context.step_activity else nullcontext()
