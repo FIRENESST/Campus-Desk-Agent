@@ -420,6 +420,8 @@ class PostgresStore:
                 s.result->>'classroom_target' AS classroom_target,
                 COALESCE(s.result->>'compound_reply',s.result->>'content') AS campus_action_reply,
                 CASE WHEN s.status='needs_input' AND r.status='succeeded'
+                    THEN s.result->'campus_action_draft' END AS campus_action_draft,
+                CASE WHEN s.status='needs_input' AND r.status='succeeded'
                     THEN s.result->'pending_campus_action' END AS pending_campus_action
                 FROM messages m LEFT JOIN runs r ON r.id=m.run_id
                 LEFT JOIN run_steps s ON m.role='user' AND s.run_id=r.id AND s.step_id='minta-action'

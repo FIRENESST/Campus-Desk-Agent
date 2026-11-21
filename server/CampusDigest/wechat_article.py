@@ -269,6 +269,8 @@ class WeChatArticles:
                 return self._page(article, offset, *cached[1])
         if saved := self.index.article_body(article_id):
             return self._page(article, offset, saved["content_source"], saved["content"], saved["url"] or url, None)
+        if self.index.read_only:
+            return self._page(article, offset, "indexed_excerpt", article["excerpt"], url, "unavailable")
         collected, complete = _collected_text(self.index.directory, article)
         if complete:
             self.index.save_article_body(article_id, collected, "collected_article", url)

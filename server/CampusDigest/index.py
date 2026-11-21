@@ -382,9 +382,17 @@ def _search_relevance(title, search_text, terms):
 
 
 class DigestIndex:
-    def __init__(self, directory, path, api):
+    def __init__(self, directory, path, api, *, read_only=False):
         self.directory, self.path, self.api = directory, path, api
+        self.read_only = read_only
         self._changed = Condition()
+        if read_only:
+            with closing(self._connect()) as db:
+                revision = db.execute("SELECT version FROM digest_revision WHERE singleton=1").fetchone()
+            if revision is None:
+                raise LookupError("没有可查询的校园日报缓存版本")
+            self._version = revision["version"]
+            return
         path.parent.mkdir(parents=True, exist_ok=True)
         with closing(self._connect()) as db, db:
             db.execute("PRAGMA journal_mode=WAL")
@@ -404,7 +412,8 @@ class DigestIndex:
             self._version = revision["version"] if revision else 0
 
     def _connect(self):
-        db = sqlite3.connect(self.path, timeout=5)
+        database = f"{self.path.resolve().as_uri()}?mode=ro" if self.read_only else self.path
+        db = sqlite3.connect(database, uri=self.read_only, timeout=5)
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA foreign_keys=ON")
         db.create_function("normalize_title", 1, _normalize, deterministic=True)
@@ -441,6 +450,8 @@ class DigestIndex:
 
     def refresh(self):
         """Import or enrich entries from the report package without discarding polled entries."""
+        if self.read_only:
+            return False
         try:
             with self._changed, closing(self._connect()) as db, db:
                 previous = db.execute("SELECT * FROM digest_revision WHERE singleton=1").fetchone()
@@ -552,6 +563,8 @@ class DigestIndex:
             if revision is None:
                 raise LookupError("校园日报索引尚未就绪")
             result = {"revision": dict(revision), "stale": not fresh}
+            if self.read_only:
+                result["collection_paused"] = True
             if query is None:
                 return result
             conditions, params = [], []

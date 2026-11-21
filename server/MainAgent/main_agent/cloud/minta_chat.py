@@ -8,7 +8,7 @@ from dataclasses import replace
 from datetime import datetime
 from time import monotonic
 
-from ..campus_cluster.action_plan import CAMPUS_ACTION_CONFIRMATION, CAMPUS_TIME_ZONE, CampusActionPlan
+from ..campus_cluster.action_plan import CAMPUS_ACTION_CONFIRMATION, CAMPUS_ACTION_DETAILS, CAMPUS_TIME_ZONE, CampusActionPlan
 from ..campus_cluster.activity_time import campus_minute
 from ..campus_cluster.agents.campus_services import CampusServicesAgent
 from ..campus_cluster.capabilities import scope_actions
@@ -28,7 +28,7 @@ from ..reliability.models import ToolResult
 from .auth import Principal
 from .campus_profiles import GRADES
 from .campus_timetable import CampusTimetable
-from .campus_planning import pending_campus_action
+from .campus_planning import draft_target_is_grounded, pending_campus_action
 from .chat_effects import ChatEffect, add_effect, lock_effect_run, resolve_effect
 from .errors import ServiceError
 from .minta_clubs import ClubCommand, change_club, list_clubs
@@ -49,6 +49,11 @@ CLUB_UNDO = {"register": "撤销社团登记", "update": "恢复社团原资料"
 CLUB_FIELDS = ("name", "category", "description")
 ACTIVITY_FIELDS = ("name", "description", "location", "starts_at", "ends_at", "capacity")
 ACTION_REGISTRATIONS = {action.id: action for action in CAMPUS_ACTION.actions}
+ACTION_DETAIL_ERRORS = frozenset({
+    "minta_target_required", "classroom_target_required", "classroom_reservation_required",
+    "gym_reservation_required", "gym_slot_required", "gym_slot_unavailable", "gym_slot_time_mismatch",
+    "invalid_loan_days", "club_activity_time_required", "club_fields_required",
+})
 REGISTRATION_TTL = 5.0
 CHINESE_LOAN_DAYS = {label: day for day, label in enumerate(
     ("一", "二", "三", "四", "五", "六", "七", "八", "九", "十", "十一", "十二", "十三", "十四"), 1,
@@ -83,10 +88,11 @@ def gym_slot_label(item):
     return f"{item['court_name']} · {start:%Y-%m-%d %H:%M}–{end:%H:%M}（北京时间）"
 
 
-class CampusConfirmation(ServiceError):
-    def __init__(self, message: str, plan: CampusActionPlan, code=CAMPUS_ACTION_CONFIRMATION):
+class CampusInputRequired(ServiceError):
+    def __init__(self, message: str, plan: CampusActionPlan, code=CAMPUS_ACTION_CONFIRMATION, *, target_name=""):
         super().__init__(422, code, message)
         self.plan = plan
+        self.target_name = target_name
 
 
 def classroom_slot_label(start, end):
@@ -106,9 +112,17 @@ def match_names(item):
     return keys - {""}
 
 
+def match_items(items, target, *, allow_partial=False):
+    items = list(items)
+    exact = [item for item in items if target in match_names(item)]
+    if exact or not allow_partial or len(target) < 2:
+        return exact
+    return [item for item in items if target in name_key(item.get("name") or item.get("title") or item.get("resource_name") or "")]
+
+
 def select_one(matches, fallback):
     if len(matches) != 1:
-        message = "有多个同名项目，请提供具体名称或项目编号。" if matches else fallback
+        message = "有多个匹配项目，请提供完整名称或项目编号。" if matches else fallback
         raise ServiceError(422, "minta_target_required", message)
     return matches[0]
 
@@ -151,6 +165,13 @@ def club_details(updates, current=None):
             audience["allow_grades"] = [labels.get(value, value) for value in audience["allow_grades"]]
         fields["audience"] = audience
     return fields
+
+
+def require_club_fields(registration, intent, required):
+    missing = [registration.arguments[key] for key in required if not intent.fields.get(key)]
+    if missing:
+        raise CampusInputRequired(f"要{registration.label}，请补充{'、'.join(missing)}。", intent.to_plan(),
+                                  "club_fields_required")
 
 
 class CampusChat:
@@ -324,13 +345,19 @@ class CampusChat:
     async def run_action(self, context, plan: CampusActionPlan, agent: CampusServicesAgent, *, confirm_first=False):
         async def action(_skill_context, args):
             reason, pending = None, None
+            target_name = ""
+            registration, access = None, None
             try:
                 who = await self.principal(context)
                 intent = CampusIntent.from_plan(args.plan)
                 if intent.service is not None:
-                    registration, _ = self._access(who, intent.service, intent.action)
+                    registration, access = self._access(who, intent.service, intent.action)
                     if intent.fields.keys() - registration.arguments.keys():
                         raise ServiceError(422, "minta_invalid_fields", "请核对办理事项及其所需信息。")
+                    if confirm_first and args.plan.action != "classroom.start" and not intent.target:
+                        if registration.id not in await self.registered_actions():
+                            raise ServiceError(503, "minta_action_unavailable", "这项校园办理暂时无法提交，请稍后再试。")
+                        raise ServiceError(422, "minta_target_required", self._ask_target(registration, access))
                 elif intent.action not in {"start", "close"} or intent.fields:
                     raise ServiceError(422, "minta_invalid_fields", "请写明办理对象和所需资料。")
                 if intent.service == "clubs":
@@ -341,22 +368,34 @@ class CampusChat:
                             raise ServiceError(422, "gym_confirmation_required", "请先核对场馆、日期、时段、场地号和预约人。")
                     content, status = await self.operate(context, who, intent, confirm_first=confirm_first)
             except ServiceError as exc:
+                content = exc.message
                 if exc.code in {CLASSROOM_PENDING, CLASSROOM_CONFIRMATION, CAMPUS_ACTION_CONFIRMATION}:
                     reason = exc.code
-                if isinstance(exc, CampusConfirmation):
+                if isinstance(exc, CampusInputRequired):
                     pending = exc.plan.model_dump()
+                    target_name = exc.target_name
+                if (confirm_first and registration is not None and args.plan.action != "classroom.start"
+                        and exc.code in ACTION_DETAIL_ERRORS):
+                    draft = exc.plan if isinstance(exc, CampusInputRequired) else args.plan
+                    if not draft_target_is_grounded(context, args.plan, draft):
+                        draft = draft.model_copy(update={"target": ""})
+                        content = self._ask_target(registration, access)
+                    reason, pending = CAMPUS_ACTION_DETAILS, draft.model_dump()
                 if exc.code == "club_write_unconfirmed":
                     status = Status.PARTIAL
                 else:
                     status = Status.NEEDS_INPUT if exc.status in {401, 403, 404, 409, 422} else Status.FAILED
-                content = exc.message
             except ValueError:
                 status = Status.NEEDS_INPUT
                 content = "请写明办理对象和所需资料，也可以在校园应用里填写。"
-            return json.dumps({"status": status.value, "message": content, "reason": reason, "pending_plan": pending},
-                              ensure_ascii=False)
+            return json.dumps({"status": status.value, "message": content, "reason": reason, "pending_plan": pending,
+                               "target_name": target_name}, ensure_ascii=False)
 
         return await agent.execute_action(str(context.conversation_id), plan, action)
+
+    @staticmethod
+    def _ask_target(registration, access):
+        return f"可以{registration.label}。请告诉我{access.required_fields[0]}。"
 
     @staticmethod
     def _confirm_action(registration, target, fields, pending):
@@ -364,18 +403,19 @@ class CampusChat:
         text = f"请确认{registration.label}「{target}」。"
         if details:
             text += details + "。"
-        return CampusConfirmation(text + "回复「确认」或「确认办理」提交。", pending)
+        return CampusInputRequired(text + "回复「确认」或「确认办理」提交。", pending, target_name=target)
 
-    async def matching(self, who, service, target, action):
+    async def matching(self, who, service, target, action, *, allow_partial=False):
         try:
             catalog = (await self.ops.catalog(who, service))["items"]
         except ServiceError as exc:
             if action != "close" or exc.code != "campus_access_denied":
                 raise
             catalog = []
+        matched = match_items(catalog, target, allow_partial=allow_partial)
         if action == "start":
-            return [(service, item) for item in catalog if target in match_names(item)]
-        resource_ids = {item["id"] for item in catalog if target in match_names(item)}
+            return [(service, item) for item in matched]
+        resource_ids = {item["id"] for item in matched}
         records = (await self.ops.list(who, service))["items"]
         return [(service, record) for record in records if record["state"] in OPEN_RECORD
                 and (record["resource_id"] in resource_ids or target in match_names(record))]
@@ -406,7 +446,8 @@ class CampusChat:
             raise ServiceError(503, "minta_action_unavailable", "这项校园办理暂时无法提交，请稍后再试。")
         for service in services:
             self._access(who, service, intent.action)
-        choices = await asyncio.gather(*(self.matching(who, service, name_key(target), intent.action) for service in services))
+        choices = await asyncio.gather(*(self.matching(who, service, name_key(target), intent.action,
+                                                     allow_partial=confirm_first) for service in services))
         empty = "没有找到匹配的个人记录。" if intent.action == "close" else "没有找到这个项目，请提供完整名称。"
         if intent.action == "start" and services == ("classroom",):
             empty = "没有找到对应的教室，请核对教室编号或名称。"
@@ -430,7 +471,15 @@ class CampusChat:
             intent = replace(intent, service=service, target=item["id"])
             if clarification := self._classroom_details(intent, registration, access, live=True):
                 raise ServiceError(422, CLASSROOM_PENDING, clarification)
-        loan_days = library_duration(intent.fields.get("duration_days")) if registration.id == "library.start" else None
+        loan_days = None
+        if registration.id == "library.start":
+            try:
+                loan_days = library_duration(intent.fields.get("duration_days"))
+            except ServiceError as exc:
+                if not confirm_first:
+                    raise
+                draft = replace(intent, target=item["title"]).to_plan()
+                raise CampusInputRequired(exc.message, draft, exc.code) from None
         classroom_times = None
         classroom_label = ""
         if registration.id == "classroom.start":
@@ -450,16 +499,22 @@ class CampusChat:
         gym_slot_id = None
         gym_label = gym_slot_label(item) if service == "gym" else ""
         if registration.id == "gym.start":
-            gym_slot_id, gym_label = await self.prepare_gym(who, item, intent.fields)
+            try:
+                gym_slot_id, gym_label = await self.prepare_gym(who, item, intent.fields)
+            except ServiceError as exc:
+                if confirm_first and exc.code in ACTION_DETAIL_ERRORS:
+                    draft = replace(intent, target=item["name"]).to_plan()
+                    raise CampusInputRequired(exc.message, draft, exc.code) from None
+                raise
             if confirm_first:
                 account = await self.ops.access.profiles.account(who) if self.ops.access else {}
                 role = "教师" if who.role == "teacher" else "学生"
                 name = account.get("full_name") or account.get("display_name") or ""
                 identity = f"{name}（{role}）" if name else f"当前登录的{role}账号"
                 pending = CampusActionPlan(action=registration.id, target=item["id"], arguments=intent.fields)
-                raise CampusConfirmation(
+                raise CampusInputRequired(
                     f"预约人：{identity}。请核对「{item['name']} · {gym_label}」。回复「确认」或「确认预约」提交。",
-                    pending,
+                    pending, target_name=item["name"],
                 )
         if confirm_first:
             target_name = item.get("resource_name") or item.get("title") or item.get("name") or intent.target
@@ -469,26 +524,28 @@ class CampusChat:
                     tail = re.sub(r"\D", "", intent.fields["phone"])[-4:]
                     contact = f"，老师姓名为「{intent.fields['name']}」，电话尾号 {tail}"
                 pending = CampusActionPlan(action=registration.id, target=item["id"])
-                raise CampusConfirmation(
+                raise CampusInputRequired(
                     f"你要预约「{target_name} · {classroom_label}（北京时间）」{contact}。请回复「确认」或「确认预约」提交。",
                     pending, CLASSROOM_CONFIRMATION,
                 )
             if loan_days is not None:
                 pending = CampusActionPlan(action=registration.id, target=item["id"],
                                            arguments={"duration_days": str(loan_days)})
-                raise CampusConfirmation(
+                raise CampusInputRequired(
                     f"请确认借阅「{target_name}」，借期 {loan_days} 天。回复「确认」或「确认办理」提交。", pending,
+                    target_name=target_name,
                 )
             if registration.id == "gym.close":
                 pending = CampusActionPlan(action=registration.id, target=item["id"])
-                raise CampusConfirmation(
+                raise CampusInputRequired(
                     f"请确认取消「{target_name}{' · ' + gym_label if gym_label else ''}」。回复「确认」或「确认办理」提交。",
-                    pending,
+                    pending, target_name=target_name,
                 )
             if registration.id == "classroom.close":
                 pending = CampusActionPlan(action=registration.id, target=item["id"])
                 label = f"{target_name} · {classroom_label}" if classroom_label else target_name
-                raise CampusConfirmation(f"请确认取消「{label}」。回复「确认」或「确认办理」提交。", pending)
+                raise CampusInputRequired(f"请确认取消「{label}」。回复「确认」或「确认办理」提交。", pending,
+                                          target_name=target_name)
             pending = CampusActionPlan(action=registration.id, target=item["id"], arguments=intent.fields)
             raise self._confirm_action(registration, target_name, intent.fields, pending)
         await self.auth.rate_limit("minta.operation", str(who.user_id), 30, 60)
@@ -558,32 +615,39 @@ class CampusChat:
         data = {"action": action}
         pending_fields = dict(intent.fields) if confirm_first else None
         if action == "register":
+            require_club_fields(registration, intent, ("category", "description"))
             data.update(club_details({**values, "name": intent.target}))
         else:
             clubs = (await list_clubs(self.ops.gateway, who.user_id, viewer))["items"]
-            club = select_one([club for club in clubs if club["can_manage"] and name_key(intent.target) in match_names(club)],
+            club = select_one(match_items((club for club in clubs if club["can_manage"]), name_key(intent.target),
+                                         allow_partial=confirm_first),
                               "未找到你有权管理的社团，请核对社团名称。")
+            label = club["name"]
+            intent = replace(intent, target=label)
             data["id"] = club["id"]
             if action in {"update", "archive", "restore"}:
                 data["version"] = club["version"]
                 if action == "update":
+                    if not values:
+                        raise CampusInputRequired("请告诉我想修改哪些社团资料。", intent.to_plan(), "club_fields_required")
                     data.update(club_details(values, club))
             elif action == "publish_activity":
                 if club["review_status"] != "approved":
                     raise ServiceError(403, "club_review_required", "社团通过审核后才能发布活动")
-                if not values.get("starts_at") or not values.get("ends_at"):
-                    raise ServiceError(422, "club_activity_time_required", "请补充活动的开始和结束时间，精确到分钟。")
+                require_club_fields(registration, intent, ACTIVITY_FIELDS)
                 data.update(details(ACTIVITY_FIELDS, values))
                 label = data.get("name", label)
             else:
                 title = values.pop("activity" if action == "update_activity" else "name", "")
-                activity = select_one([item for item in club["activities"] if name_key(title) in match_names(item)],
+                activity = select_one(match_items(club["activities"], name_key(title), allow_partial=confirm_first),
                                       "请写明要管理的社团活动名称。")
                 data.update(activity_id=activity["id"], version=activity["version"])
                 label = activity["name"]
                 if pending_fields is not None:
                     pending_fields["activity" if action == "update_activity" else "name"] = activity["id"]
                 if action == "update_activity":
+                    if not values:
+                        raise CampusInputRequired("请告诉我想修改哪些活动资料。", intent.to_plan(), "club_fields_required")
                     if not (values.get("ends_at") or activity["ends_at"]):
                         raise ServiceError(422, "club_activity_time_required", "请一并提供活动的结束时间，精确到分钟。")
                     data.update(details(ACTIVITY_FIELDS, values, activity))
@@ -592,7 +656,8 @@ class CampusChat:
         command = ClubCommand.model_validate(data)
         if confirm_first:
             pending = CampusActionPlan(action=registration.id, target=data.get("id", intent.target), arguments=pending_fields)
-            raise self._confirm_action(registration, intent.target, intent.fields, pending)
+            target = f"{club['name']} · {label}" if action.endswith("_activity") else label
+            raise self._confirm_action(registration, target, intent.fields, pending)
         who = await self.principal(context)
         self._access(who, intent.service, action)
         await self.auth.rate_limit("minta.club_write", str(who.user_id), 30, 60)

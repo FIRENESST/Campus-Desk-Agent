@@ -12,7 +12,7 @@ def main():
     args = parser.parse_args()
     directory = args.directory.resolve()
     if not (directory / "app" / "main.py").is_file():
-        parser.error("请将 CAMPUS_RUMOR_DIR 指向包含 app/main.py 的校园谣言防控交付目录")
+        parser.error(f"交付包缺少 app/main.py：{directory}。请检查 CAMPUS_RUMOR_DIR。")
     os.chdir(directory)
     sys.path[:0] = [str(directory), str(Path(__file__).resolve().parents[2])]
     os.environ["HOST"] = "127.0.0.1"

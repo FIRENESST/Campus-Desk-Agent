@@ -2,8 +2,8 @@
 
 import asyncio
 import json
-import unicodedata
 from datetime import datetime
+from enum import Enum
 
 from ..campus_cluster.action_plan import CAMPUS_TIME_ZONE, CampusActionPlan
 from ..campus_cluster.activity_time import campus_datetime
@@ -18,12 +18,13 @@ ACTION_INTENT_RULE = Rule(
     "campus.action_plan",
     "核对拟办动作、对象和参数是否符合用户本轮的明确委托或同一事项的补充。"
     "把礼貌地请你帮忙办理的问句理解为委托，结合上下文区分发起办理与询问规则。"
-    "允许缺少待追问的字段。参数应来自用户消息，不能采用助手举的例子。"
+    "这是已经通过业务校验、准备展示给用户确认的计划。参数必须对应用户表达，不能采用助手举的例子。"
+    "服务预览可证明目录中的编号、完整名称和简称指向同一对象。业务默认值以服务清单为准。"
     "如果本轮明确选择了前文场馆时段表中的一项，允许用随附的服务记录补齐该行的场馆、日期及起止时间。"
     "教室预约的时段以及体育馆预约的日期、场地号和时间可按北京时间规范化。核对与用户所选一致。"
     "复用前文参数时，本轮必须明确接续同一事项。历史中的委托或确认不能代替本轮的意思。"
     "用户只是咨询、转述、否认或说算了，未选择多项中的哪一项，或计划忽略了不支持的附加条件时，不通过。"
-    "这是提交前的计划，其中的动作、对象和参数不属于事实声明，claims 可留空。",
+    "只在 rule_checks 中说明结论，claims 和 issues 都填空数组。",
 )
 ACTION_CONFIRMATION_RULE = Rule(
     "campus.action_confirmation",
@@ -31,9 +32,15 @@ ACTION_CONFIRMATION_RULE = Rule(
     "pending.previous_reply_is_preview 为真表示上一条回复就是这笔待办的确认提示。"
     "简短肯定只有在直接回应确认提示时才足以同意。中间切过话题时，用户必须明确接续这笔待办。"
     "问句、闲聊、同意另一件事、否定、修改对象或附加条件都不能通过。此前的授权或确认也不能代替本轮。"
-    "候选内容是确认意图的判断，claims 可留空。",
+    "只在 rule_checks 中说明结论，claims 和 issues 都填空数组。",
 )
 CAMPUS_INTENT_TIMEOUT = 20.0
+
+
+class ActionReview(Enum):
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    UNAVAILABLE = "unavailable"
 
 
 def campus_action_turns(history):
@@ -59,6 +66,19 @@ def last_answered_user(history):
     if len(history) >= 2 and history[-2]["role"] == "user" and history[-1]["role"] == "assistant":
         return history[-2]
     return None
+
+
+def campus_action_draft(history) -> CampusActionPlan | None:
+    turn = last_answered_user(history)
+    if turn is None:
+        return None
+    value = turn.get("campus_action_draft") or turn.get("pending_campus_action")
+    if value is None:
+        return None
+    try:
+        return CampusActionPlan.model_validate(value)
+    except ValueError:
+        return None
 
 
 def model_dialog_history(history) -> tuple[Message, ...]:
@@ -88,17 +108,17 @@ def pending_confirmation_context(history, plan: CampusActionPlan | None) -> dict
     }
 
 
-def plan_matches_message(plan: CampusActionPlan, query: str, history) -> bool:
-    messages = [item["content"] for item in history if item["role"] == "user"]
-    texts = [unicodedata.normalize("NFKC", redact_classroom_contact(content)) for content in (*messages, query)]
-    if plan.action in {"gym.start", "gym.close", "classroom.close"}:
-        # The model can normalize Chinese numerals, relative dates and clock times.
-        # The intent reviewer checks these against the source before a preview is created.
-        target = unicodedata.normalize("NFKC", plan.target)
-        return (not target and plan.action == "gym.start") or any(target and target in text for text in texts)
-    values = (plan.target, *plan.arguments.values())
-    return all(value and "[电话已隐藏]" not in value and
-               any(unicodedata.normalize("NFKC", value) in text for text in texts) for value in values)
+def draft_target_is_grounded(context, plan, draft) -> bool:
+    if not draft.target:
+        return True
+    names = {name for value in (plan.target, draft.target) if (name := name_key(value))}
+    previous = campus_action_draft(context.history)
+    if previous is not None and previous.action == draft.action and name_key(previous.target) in names:
+        return True
+    if draft.action == "gym.start" and matching_gym_slots(plan, recent_gym_slots(context.history)):
+        return True
+    messages = [context.query, *(item["content"] for item in context.history if item["role"] == "user")]
+    return any(name in name_key(message) for message in messages for name in names)
 
 
 def recent_gym_slots(history) -> tuple[dict[str, str], ...]:
@@ -138,7 +158,8 @@ def matching_gym_slots(plan: CampusActionPlan, slots: tuple[dict[str, str], ...]
                   target in name_key(slot["venue_name"]).replace(" ", "")))
 
 
-async def review_campus_action(reviewer, context, plan: CampusActionPlan, *, confirmation=None, gym_slot=None) -> bool:
+async def review_campus_action(reviewer, context, plan: CampusActionPlan, *, confirmation=None, prepared=None,
+                               references=(), gym_slot=None) -> ActionReview:
     classroom = plan.action == "classroom.start"
     if confirmation is None:
         rule, proposal = ACTION_INTENT_RULE, _model_plan(plan)
@@ -147,18 +168,24 @@ async def review_campus_action(reviewer, context, plan: CampusActionPlan, *, con
     instruction = "请根据会话和最后一条用户消息，按所给规则审核这次校园办理意图。"
     if confirmation is None and plan.action in {"gym.start", "gym.close", "classroom.start", "classroom.close"}:
         instruction += f"今天是北京时间 {datetime.now(CAMPUS_TIME_ZONE):%Y-%m-%d}，按此日期理解本轮的相对时间。"
-    evidence = () if gym_slot is None else (Evidence(
-        "gym-slot", json.dumps(gym_slot, ensure_ascii=False), "前文已展示的场馆时段表", status="success",
-    ),)
+    evidence = []
+    if gym_slot is not None:
+        evidence.append(Evidence("gym-slot", json.dumps(gym_slot, ensure_ascii=False), "前文已展示的场馆时段表",
+                                 status="success"))
+    if prepared is not None:
+        evidence.append(Evidence("campus-preparation", json.dumps(_model_plan(prepared), ensure_ascii=False),
+                                 "校务服务校验后的办理参数", status="success"))
+    evidence.extend(references)
     check = ReviewContext(
         messages=(Message("system", instruction),
                   *model_dialog_history(context.history),
                   Message("user", redact_classroom_contact(context.query, pending=classroom))),
-        rules=(rule,), evidence=evidence,
+        rules=(rule,), evidence=tuple(evidence),
         answer=json.dumps(proposal, ensure_ascii=False),
     )
     try:
         async with asyncio.timeout(CAMPUS_INTENT_TIMEOUT):
-            return not review_findings(check, await reviewer.review(check))
+            findings = review_findings(check, await reviewer.review(check))
+            return ActionReview.REJECTED if findings else ActionReview.APPROVED
     except (AgentError, TimeoutError, ValueError, RecursionError):
-        return False
+        return ActionReview.UNAVAILABLE

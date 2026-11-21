@@ -14,8 +14,10 @@ def wrap(app, *, gateway_key):
     from starlette.middleware import Middleware
     from starlette.responses import JSONResponse
 
+    from app.core import storage
     from app.core.security import Boundary, Principal, UPLOAD_PATHS
-    from app.core.storage import store_tip
+
+    store_tip = getattr(storage, "store_tip", None)
 
     class Tip(BaseModel):
         model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
@@ -23,7 +25,14 @@ def wrap(app, *, gateway_key):
         content: Annotated[str, StringConstraints(min_length=5, max_length=2000)]
 
     def tip(payload: Tip):
-        return {"ok": True, "tid": store_tip(payload.content, "", None, "campus-desk")}
+        if store_tip is None:
+            # Delivery 1.2 stores text-only tips directly in the database.
+            from app.core import db
+
+            tid = db.add_tip(payload.content)
+        else:
+            tid = store_tip(payload.content, "", None, "campus-desk")
+        return {"ok": True, "tid": tid}
 
     def reviewed(request: Request, key: Annotated[str, StringConstraints(pattern=r"^[a-f0-9]{32}$")]):
         if not request.state.principal.can_write:

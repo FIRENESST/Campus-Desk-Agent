@@ -209,6 +209,9 @@ function renderFeed(data, ui, options) {
     const label = data.stale ? '上次成功更新' : '内容更新于';
     feed.append(element('p', 'digest-sync', `${label} ${syncTime.format(updated)}`));
   }
+  if (data.collection_paused) {
+    feed.append(element('p', 'digest-sync', '实时采集暂不可用，当前显示已缓存的文章。'));
+  }
   if (data.following_enabled) {
     const toolbar = element('div', 'digest-follow-toolbar');
     const toggle = button(options.showFollowing ? '收起公众号名录' : '管理特别关注', () => {

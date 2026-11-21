@@ -240,13 +240,17 @@ class OnlineAdmin:
         raw = bytearray()
         try:
             async with client.stream(request.method, url, headers={"X-Campus-Runtime-Key": key}, timeout=25) as reply:
-                if reply.status_code not in {200, 202}:
+                if reply.status_code not in {200, 202, 503}:
                     raise ValueError
                 async for chunk in reply.aiter_bytes():
                     raw.extend(chunk)
                     if len(raw) > MAX_QR_BASE64 + 1024:
                         raise ValueError
                 payload = parse_json(raw)
+            if reply.status_code == 503:
+                if isinstance(payload, dict) and payload.get("error") == "digest_package_missing":
+                    raise InterfaceError(503, "digest_package_missing", "校园日报采集包缺失，公众号总成暂时使用缓存。")
+                raise ValueError
             state, phase = payload["session"], payload["phase"]
             if state not in SESSION_STATES or phase not in SCAN_PHASES:
                 raise ValueError

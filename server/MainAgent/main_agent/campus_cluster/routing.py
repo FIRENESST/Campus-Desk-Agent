@@ -84,9 +84,15 @@ CAMPUS_ACTION_PLAN_RULES = (
     "用户明确要查校方发布的制度原文或核实异常变动时，按相应规则核实。"
     "解释办理流程本身不构成提交授权。"
     "发起教室预约时直接输出教室预约计划，缺少教室时 target 用空字符串，缺少联系人字段时省略这些键。"
-    "用户明确请你办理一项校务且给出了对象和参数时，输出"
+    "用户明确请你办理一项校务时，即使对象或必填字段还不齐，也输出"
     ' {"campus_action":{"action":"动作 ID","target":"用户给出的名称或编号","arguments":{}}}。'
     "action 必须来自校园服务清单，arguments 的键来自该动作的 arguments 字段。"
+    "只填用户已给出的值，缺少对象时 target 用空字符串，缺少字段时省略对应键，由服务端询问缺项。"
+    "诸如『一本书』『一个活动』『一个场地』只说明类别，未给出具体对象。"
+    "例如请预约一个具体场馆但未指定时间时，已有场馆就照填，日期和时间留给服务端询问。"
+    '有 campus_action_draft 且用户正在回答刚才的问题、补充或改正同一事项时，输出 '
+    '{"continue_campus_action":{"target":"本轮给出的新对象","arguments":{}}}。'
+    "只提供本轮新增或更正的字段，已有值由服务端保留，未改对象时省略 target。新事项和查询按当前请求路由。"
     "对象和参数取自用户消息。只有本轮明确指代前文的同一事项时，才复用最近几轮中用户给出的值。"
     "教室预约把明确的开始和结束时间按北京时间规范为 starts_at、ends_at（YYYY-MM-DDTHH:MM），"
     "相对日期以 campus_today 为准。缺少时间时省略相应的键。取消时可用预约编号或注明原开始时间。"
@@ -263,6 +269,7 @@ class LLMRouter:
         allow_direct: bool = False, direct_context: str = "",
         capabilities: Callable[[tuple[AgentProfile, ...]], Awaitable[list[dict]]] | None = None,
         allow_action_plans: bool = False, gym_slots: tuple[dict[str, str], ...] = (),
+        action_draft: CampusActionPlan | None = None,
     ):
         self.llm = llm
         self.feedback = feedback
@@ -271,6 +278,7 @@ class LLMRouter:
         self.capabilities = capabilities
         self.allow_action_plans = allow_action_plans
         self.gym_slots = gym_slots
+        self.action_draft = action_draft
 
     async def route(self, request: ClusterRequest, catalog: tuple[AgentProfile, ...]) -> RoutePlan:
         if request.targets and not self.allow_direct:
@@ -330,6 +338,8 @@ class LLMRouter:
         }
         if self.gym_slots:
             payload["recent_gym_slots"] = self.gym_slots
+        if self.action_draft is not None:
+            payload["campus_action_draft"] = self.action_draft.model_dump()
         return payload
 
     async def _scope(self, payload):
@@ -347,6 +357,7 @@ class LLMRouter:
                 f"{policy_scope}"
                 '查具体日期的教室空闲、场馆余量、活动时段、授课、个人日程或图书到期时，输出 {"campus":true}。'
                 '用户接着 recent_gym_slots 选择桌号或时段并发起预约时，输出 {"campus":true}。'
+                '用户正在补充或更正 campus_action_draft 的字段时，输出 {"campus":true}。'
                 '凡是涉及或无法排除需要校园资料或校内业务的任务，输出 {"campus":true}。'
                 '用户要查询学校公众号名称、查询公众号文章或读取公众号正文时，输出 {"wechat_lookup":true}。'
                 "如果本轮在补充一个已经明确的校内查询，把完整查询写入同一个 JSON 的 resolved_query 字段。"
@@ -445,7 +456,7 @@ class LLMRouter:
             f"{plan_instruction}"
             "用户明确提出多项任务时，按各项任务需要的技能选择角色，可以同时选择多个。"
             "查找图书、查询当前场地余量或正常的实时校务状态时，优先选择校园服务。"
-            '只有缺少不能从本次对话得到的关键条件，且影响下一步时，输出 {"clarification":"向用户提出的简短问题"}。'
+            '无法确定要办哪件事，或缺少查询必需的条件时，输出 {"clarification":"向用户提出的简短问题"}。'
             "不要直接回答问题、选择清单外角色或调用工具。"
             "\n以下是服务端提供的角色资料和已启用技能。actions 列出本轮登录账号可申请的办理事项、"
             "所需信息和前置校验，实际提交时由服务端核验并返回回执。\n"
@@ -531,6 +542,18 @@ class LLMRouter:
                                                "当前账号可办理的校园服务"),
                     )
                 return RoutePlan(clarification="暂时无法确认这项服务的办理入口。")
+            if self.allow_action_plans and set(decision) == {"continue_campus_action"}:
+                draft, update = self.action_draft, decision["continue_campus_action"]
+                if draft is None or not isinstance(update, dict) or update.keys() - {"target", "arguments"}:
+                    return RoutePlan(clarification="请告诉我要补充或修改哪项信息。")
+                try:
+                    change = CampusActionPlan.model_validate({**update, "action": draft.action})
+                except ValueError:
+                    return RoutePlan(clarification="请核对你要补充的信息。")
+                if not change.target and not change.arguments:
+                    return RoutePlan(clarification="请告诉我要补充或修改哪项信息。")
+                decision = {"campus_action": {"action": draft.action, "target": change.target or draft.target,
+                                              "arguments": {**draft.arguments, **change.arguments}}}
             if self.allow_action_plans and set(decision) == {"campus_action"} and isinstance(decision["campus_action"], dict):
                 try:
                     action_plan = CampusActionPlan.model_validate(decision["campus_action"])
@@ -542,7 +565,7 @@ class LLMRouter:
                 return RoutePlan(clarification="请核对这项校园业务及其所需资料。")
             if set(decision) == {"campus_action"} and isinstance(decision["campus_action"], str):
                 action_id = decision["campus_action"]
-                if self.allow_action_plans and action_id in {"classroom.start", "gym.start"} and action_id in service_actions:
+                if self.allow_action_plans and action_id in service_actions:
                     return RoutePlan(campus_action=CampusActionPlan(action=action_id))
                 action = available_actions.get(action_id)
                 if action:

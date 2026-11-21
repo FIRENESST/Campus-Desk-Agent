@@ -15,7 +15,7 @@ from MainProcessManager.control import ROOT, ControlStore, control_lock
 from MainProcessManager.control_pipe import ControlPipe
 from MainProcessManager.external import FRP_BACKEND, FRP_PROXY, LAN_BACKEND, LAN_PROXY
 from MainProcessManager.processes import Supervisor
-from MainProcessManager.services import CORE, RELOAD_APPS, Service
+from MainProcessManager.services import CORE, RELOAD_APPS, Service, project_services
 from server.CASserver.store import CASStore
 CLIENT_FILE = ROOT / "server" / "UnifiedInterfaceManagement" / "request_auth.py"
 LISTENER_COMMAND = (
@@ -31,6 +31,32 @@ LISTENER_COMMAND = (
 
 
 class SupervisorTests(unittest.TestCase):
+    @patch.dict(os.environ, {"CAMPUS_DIGEST_DIR": "", "CAMPUS_RUMOR_DIR": "", "CAMPUS_RUMOR_PYTHON": ""})
+    def test_package_registration_can_use_local_deliveries_and_digest_cache(self):
+        root = Path(self.enterContext(TemporaryDirectory())) / "Desktop" / "Projects" / "Campus"
+        initial = project_services(root)
+        self.assertEqual(initial["campus-digest"].argv[-1], "--cached")
+        self.assertFalse(initial["campus-rumor"].start_all)
+        self.assertFalse(initial["campus-digest"].start_all)
+
+        for marker in (root / "server/MainAgent/.venv/Scripts/python.exe",
+                       root / "DataBase/CampusDigest/digest.sqlite3"):
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.touch()
+        self.assertTrue(project_services(root)["campus-digest"].start_all)
+
+        digest = root / "server" / "CampusDigest" / ".runtime" / "delivery"
+        rumor = root / "server" / "CampusRumor" / ".runtime" / "delivery"
+        for marker in (digest / "server/winctl.py", digest / "runtime/python/python.exe",
+                       rumor / "app/main.py", rumor.parent / "python/python.exe"):
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.touch()
+
+        restored = project_services(root)
+        self.assertEqual(Path(restored["campus-digest"].argv[-1]), digest)
+        self.assertEqual(Path(restored["campus-rumor"].argv[-1]), rumor)
+        self.assertTrue(restored["campus-rumor"].start_all)
+
     def test_cas_is_supervised_and_managed_in_the_private_state_directory(self):
         with TemporaryDirectory() as temporary, closing(ControlStore(Path(temporary))) as store:
             with closing(Supervisor(store, ROOT)) as supervisor, redirect_stdout(StringIO()):

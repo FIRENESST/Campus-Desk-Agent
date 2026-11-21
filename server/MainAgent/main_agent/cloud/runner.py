@@ -14,7 +14,7 @@ from ..campus_cluster import (
     AgentId, AgentProfile, ClusterRequest, LLMRouter, ReliableAgentBackend, Router, RoutingFeedback, RumorVerdict,
     SkillRegistry, Status, build_campus_cluster,
 )
-from ..campus_cluster.action_plan import CAMPUS_ACTION_CONFIRMATION, CampusActionPlan
+from ..campus_cluster.action_plan import CAMPUS_ACTION_CONFIRMATION, CAMPUS_ACTION_DETAILS, CampusActionPlan
 from ..campus_cluster.agents.rumor_assessment import (
     PROFILE as RUMOR_ASSESSMENT_PROFILE, RUMOR_VERDICT_RULE, RumorVerdictCheck, parse_rumor_verdict,
 )
@@ -44,8 +44,8 @@ from ..reliability import (
 )
 from ..reliability.review import structured_receipt
 from .campus_planning import (
-    last_answered_user, matching_gym_slots, pending_campus_action, pending_confirmation_context, plan_matches_message,
-    recent_gym_slots, review_campus_action,
+    ActionReview, campus_action_draft, last_answered_user, matching_gym_slots, pending_campus_action,
+    pending_confirmation_context, recent_gym_slots, review_campus_action,
 )
 from .classroom_dialog import (
     CLARIFY_CAMPUS_TURN, CONFIRM_PENDING, ClassroomTurn, classroom_draft, classroom_route_turn, plan_campus_turn,
@@ -282,7 +282,7 @@ class CampusRunner:
         self.routing_feedback = routing_feedback
         self.answerer = answerer
         self.campus_chat = campus_chat
-        self.action_reviewer = (LLMReviewer(answerer.llm, max_format_retries=0)
+        self.action_reviewer = (LLMReviewer(answerer.llm)
                                 if answerer is not None and campus_chat is not None else None)
 
     @classmethod
@@ -346,6 +346,7 @@ class CampusRunner:
                 llm, feedback=routing_feedback, allow_direct=True,
                 capabilities=capabilities, allow_action_plans=campus_chat is not None,
                 gym_slots=recent_gym_slots(context.history) if campus_chat else (),
+                action_draft=campus_action_draft(context.history) if campus_chat else None,
             )
             cluster = build_campus_cluster(backends=backends, router=routing)
             cluster.registry.get(AgentId.CAMPUS_SERVICES).skill_registry = registries[AgentId.CAMPUS_SERVICES]
@@ -399,6 +400,7 @@ class CampusRunner:
             model = self.answerer.llm if self.answerer is not None else None
             pending = pending_campus_action(context.history)
             draft = classroom_draft(context.history)
+            action_draft = campus_action_draft(context.history)
             confirmation_plan = draft.plan if draft is not None and draft.ready else pending
             confirmation = pending_confirmation_context(context.history, confirmation_plan)
             if command == "确认":
@@ -412,6 +414,8 @@ class CampusRunner:
                 if pending is None:
                     if draft is not None and draft.ready:
                         return RunOutput("教室预约仍待确认。请回复「确认预约」。", Status.NEEDS_INPUT.value)
+                    if action_draft is not None:
+                        return self._await_details(context, action_draft)
                     return RunOutput("当前会话没有待确认的校务办理。请先发起办理。", Status.NEEDS_INPUT.value)
                 return await self._run_action(context, self.cluster_factory(context), pending)
             if command == "确认预约":
@@ -421,10 +425,14 @@ class CampusRunner:
                     return RunOutput("教室预约仍在补资料，请接着填写刚才提示的信息。", Status.NEEDS_INPUT.value)
                 if pending is not None and pending.action == "gym.start":
                     return await self._run_action(context, self.cluster_factory(context), pending)
-                return RunOutput("当前会话没有待确认的教室预约。", Status.NEEDS_INPUT.value)
-            reservation_pending = draft is not None or (pending is not None and pending.action == "gym.start")
+                if action_draft is not None and action_draft.action == "gym.start":
+                    return self._await_details(context, action_draft)
+                return RunOutput("当前会话没有待确认的预约。请先发起预约。", Status.NEEDS_INPUT.value)
+            reservation_pending = draft is not None or (pending is not None and pending.action == "gym.start") or (
+                action_draft is not None and action_draft.action == "gym.start"
+            )
             if command in ABANDON_CAMPUS_ACTION or (reservation_pending and command in ABANDON_RESERVATION):
-                if draft is None and pending is None:
+                if draft is None and pending is None and action_draft is None:
                     return RunOutput("当前会话没有待放弃的校务办理。", Status.NEEDS_INPUT.value)
                 return self._action_output("已放弃这项待办理事项。", Status.COMPLETED.value)
             intent = campus_intent(context.query)
@@ -432,7 +440,7 @@ class CampusRunner:
             if turn == CONFIRM_PENDING and confirmation_plan is not None and confirmation is not None:
                 if self.action_reviewer is not None and await review_campus_action(
                     self.action_reviewer, context, confirmation_plan, confirmation=confirmation,
-                ):
+                ) is ActionReview.APPROVED:
                     return await self._run_action(context, self.cluster_factory(context), confirmation_plan)
                 return self._confirmation_hint(confirmation_plan)
             if turn == CLARIFY_CAMPUS_TURN:
@@ -520,6 +528,7 @@ class CampusRunner:
                 classroom = classroom_route_turn(context.query, proposal)
                 if classroom is not None:
                     return await self._run_classroom(context, cluster, classroom)
+                return RunOutput("请补充教室编号及需要预约的时间。", Status.NEEDS_INPUT.value)
             if proposal.action == "gym.start":
                 slots = matching_gym_slots(proposal, recent_gym_slots(context.history))
                 if len(slots) == 1:
@@ -533,10 +542,10 @@ class CampusRunner:
                                ("时段", ("start_time", "end_time")))
                     fields = [label for label, keys in options
                               if len({tuple(slot[key] for key in keys) for slot in slots}) > 1]
-                    return RunOutput(f"前面的时段表里有多个符合的选项，请补充{'和'.join(fields)}。", Status.NEEDS_INPUT.value)
-            if proposal.action != "classroom.start" and plan_matches_message(proposal, context.query, context.history):
-                return await self._run_action(context, cluster, proposal, confirm_first=True, review=True)
-            return RunOutput("请补充要办理的具体对象和所需信息。", Status.NEEDS_INPUT.value)
+                    content = f"前面的时段表里有多个符合的选项，请补充{'和'.join(fields)}。"
+                    return self._action_output(content, Status.NEEDS_INPUT.value,
+                                               {"content": content, "campus_action_draft": proposal.model_dump()})
+            return await self._run_action(context, cluster, proposal, confirm_first=True, review=True)
         profiles = {profile.id: profile.name for profile in cluster.registry.profiles}
         sections, references, steps, artifacts = [], list(request.evidence), [], []
         delegated_rag = []
@@ -810,15 +819,22 @@ class CampusRunner:
 
     async def _run_action(self, context, cluster, plan, *, confirm_first=False, review=False, classroom_source=None,
                           gym_slot=None):
+        if review and not confirm_first:
+            raise ValueError("办理意图审核只适用于提交前准备")
         if context.attempt > 1 and not confirm_first and plan.target and plan.action != "classroom.start":
             return self._previous_action_output(context)
-        if review and (self.action_reviewer is None or
-                       not await review_campus_action(self.action_reviewer, context, plan, gym_slot=gym_slot)):
-            return RunOutput("请确认你想办理的事项，并写明具体对象。", Status.NEEDS_INPUT.value)
         agent = cluster.registry.get(AgentId.CAMPUS_SERVICES)
         activity = context.step_activity("minta-action", agent.profile.id) if context.step_activity else nullcontext()
         async with activity:
             reply, pending = await self.campus_chat.run_action(context, plan, agent, confirm_first=confirm_first)
+            if review and reply.reason == CAMPUS_ACTION_CONFIRMATION and pending is not None:
+                decision = ActionReview.UNAVAILABLE if self.action_reviewer is None else await review_campus_action(
+                    self.action_reviewer, context, plan, prepared=pending, references=reply.evidence, gym_slot=gym_slot,
+                )
+                if decision is ActionReview.UNAVAILABLE:
+                    return self._unreviewed_action(context, "暂时无法核对办理条件，请稍后重试这条请求。", Status.FAILED)
+                if decision is ActionReview.REJECTED:
+                    return self._unreviewed_action(context, "请明确这次要办理的事项和必须满足的条件。", Status.NEEDS_INPUT)
         result = {"content": reply.content}
         if reply.reason in {CLASSROOM_PENDING, CLASSROOM_CONFIRMATION}:
             result[CLASSROOM_PENDING] = True
@@ -830,7 +846,25 @@ class CampusRunner:
                 result["classroom_source"] = classroom_source
         elif reply.reason == CAMPUS_ACTION_CONFIRMATION and pending is not None:
             result["pending_campus_action"] = pending.model_dump()
+        elif reply.reason == CAMPUS_ACTION_DETAILS and pending is not None:
+            result["campus_action_draft"] = pending.model_dump()
         return self._action_output(reply.content, reply.status.value, result)
+
+    @staticmethod
+    def _await_details(context, draft):
+        previous = last_answered_user(context.history) or {}
+        content = previous.get("campus_action_reply") or "请接着补充刚才提示的内容。"
+        return CampusRunner._action_output(content, Status.NEEDS_INPUT.value,
+                                           {"content": content, "campus_action_draft": draft.model_dump()})
+
+    @staticmethod
+    def _unreviewed_action(context, content, status):
+        previous = last_answered_user(context.history) or {}
+        if draft := previous.get("campus_action_draft"):
+            return CampusRunner._action_output(content, status.value, {"content": content, "campus_action_draft": draft})
+        if pending_campus_action(context.history) is not None:
+            return CampusRunner._action_output(content, status.value)
+        return RunOutput(content, status.value)
 
     @staticmethod
     def _confirmation_hint(plan, *, clarify=False):

@@ -40,6 +40,24 @@ class DigestAPI:
 
 
 class DigestIndexTests(unittest.TestCase):
+    def test_cached_index_serves_saved_data_when_source_package_is_missing(self):
+        directory = Path(self.enterContext(TemporaryDirectory()))
+        path = directory / "digest.sqlite3"
+        original = DigestIndex(directory, path, DigestAPI())
+        filters = _wechat_filters("account=学生会")
+        published = original.read(**filters)
+
+        cached = DigestIndex(None, path, None, read_only=True)
+        result = cached.read(**filters)
+        self.assertEqual(result["items"], published["items"])
+        self.assertEqual(result["revision"], published["revision"])
+        self.assertTrue(result["collection_paused"])
+        self.assertTrue(result["stale"])
+        self.assertTrue(cached.wechat_accounts(query="学生会")["accounts"])
+        with closing(cached._connect()) as db:
+            with self.assertRaises(sqlite3.OperationalError):
+                db.execute("DELETE FROM digest_item")
+
     def test_tool_search_ranks_title_before_metadata_and_body_matches(self):
         directory = Path(self.enterContext(TemporaryDirectory()))
         api = DigestAPI()

@@ -9,6 +9,7 @@ import re
 import signal
 import sqlite3
 import sys
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import BoundedSemaphore, Thread
 from time import monotonic
@@ -197,6 +198,8 @@ def _handler(base, index, weread, runtime_key, articles):
                 return self.send_error(403)
             if query or self.headers.get_all("Content-Length", []) not in ([], ["0"]) or "Transfer-Encoding" in self.headers:
                 return self.send_error(400)
+            if weread is None:
+                return self._json(503, {"error": "digest_package_missing", "message": "校园日报采集程序包缺失。"})
             try:
                 if self.command == "POST":
                     return self._json(202, weread.start())
@@ -236,6 +239,34 @@ def _handler(base, index, weread, runtime_key, articles):
                 super().log_message(fmt, *args)
 
     return Handler
+
+
+class _CachedHandler(BaseHTTPRequestHandler):
+    def _json(self, status, data):
+        body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        if self.path == "/healthz":
+            return self._json(200, {"ok": True, "collection_paused": True})
+        self.send_error(404)
+
+    def do_POST(self):
+        self.send_error(404)
+
+
+def _serve_cached(index, port):
+    articles = WeChatArticles(index, lambda: ())
+    handler = _handler(_CachedHandler, index, None, os.getenv("MPM_RUNTIME_STATUS_KEY", ""), articles)
+    with ThreadingHTTPServer(("127.0.0.1", port), handler) as httpd:
+        httpd.wechat_slots = BoundedSemaphore(64)
+        print(f"校园日报已在 127.0.0.1:{port} 启动，仅提供缓存查询。请恢复 Windows 采集包以继续更新。", flush=True)
+        httpd.serve_forever()
 
 
 def _runner(scheduler, index):
@@ -279,13 +310,26 @@ def _fill_wechat_bodies(articles, stopping):
 
 def main():
     parser = argparse.ArgumentParser(description="运行受主管理器管理的校园日报及其查询索引")
-    parser.add_argument("directory", type=Path)
+    parser.add_argument("directory", type=Path, nargs="?")
+    parser.add_argument("--cached", action="store_true", help="从现有 SQLite 索引提供只读查询")
     parser.add_argument("--port", type=int, default=os.getenv("CAMPUS_DIGEST_PORT") or "8184")
     parser.add_argument("--index", type=Path, default=DEFAULT_INDEX)
     args = parser.parse_args()
+    if not 1 <= args.port <= 65_535:
+        parser.error("校园日报监听端口必须为 1–65535")
+    if args.cached:
+        if args.directory is not None:
+            parser.error("--cached 不需要校园日报程序包目录")
+        try:
+            index = DigestIndex(None, args.index, None, read_only=True)
+        except (LookupError, sqlite3.Error):
+            parser.error(f"缺少 Windows 采集包，且无法打开校园日报缓存：{args.index}")
+        return _serve_cached(index, args.port)
+    if args.directory is None:
+        parser.error("请指定校园日报 Windows 采集包目录")
     directory = args.directory.resolve()
-    if not (directory / "server" / "winctl.py").is_file() or not 1 <= args.port <= 65_535:
-        parser.error("请检查校园日报目录与本机监听端口")
+    if not (directory / "server" / "winctl.py").is_file():
+        parser.error(f"校园日报程序包缺少 server/winctl.py：{directory}")
     os.environ["WEB_PORT"] = str(args.port)
     sys.path[:0] = [str(directory / "server"), str(directory / "pipeline")]
     import winctl

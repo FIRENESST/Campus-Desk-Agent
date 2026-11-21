@@ -50,6 +50,12 @@ def _python(name, directory, *args, depends_on=(), listener=True, window=False):
     return Service(name, directory, (str(interpreter), "-B", *args), depends_on, listener, window=window)
 
 
+def _package_directory(root, env, managed, legacy, *required):
+    if override := os.getenv(env):
+        return root / override
+    return managed if all((managed / file).is_file() for file in required) else legacy
+
+
 def project_services(root: Path) -> dict[str, Service]:
     server = root / "server"
     data = root / "DataBase"
@@ -60,9 +66,19 @@ def project_services(root: Path) -> dict[str, Service]:
     if not cas_python.is_file():
         cas_python = agent / ".venv" / "Scripts" / "python.exe"
     rag = data / "RAG"
-    digest_dir = root / (os.getenv("CAMPUS_DIGEST_DIR") or "integrations/campus-digest")
+    digest_install = root / "integrations" / "campus-digest"
+    digest_dir = _package_directory(root, "CAMPUS_DIGEST_DIR", server / "CampusDigest" / ".runtime" / "delivery",
+                                    digest_install, "server/winctl.py", "runtime/python/python.exe")
     digest_python = digest_dir / "runtime" / "python" / "python.exe"
-    rumor_dir = root / (os.getenv("CAMPUS_RUMOR_DIR") or "integrations/campus-rumor")
+    digest_args = (str(digest_dir),)
+    digest_ready = digest_python.is_file() and (digest_dir / "server/winctl.py").is_file()
+    if not os.getenv("CAMPUS_DIGEST_DIR") and not digest_ready:
+        digest_python = agent / ".venv" / "Scripts" / "python.exe"
+        digest_args = ("--cached",)
+        digest_ready = digest_python.is_file() and (data / "CampusDigest" / "digest.sqlite3").is_file()
+    rumor_install = root / "integrations" / "campus-rumor"
+    rumor_dir = _package_directory(root, "CAMPUS_RUMOR_DIR", server / "CampusRumor" / ".runtime" / "delivery",
+                                   rumor_install, "app/main.py")
     rumor_runtime = server / "CampusRumor" / ".runtime" / "python" / "python.exe"
     rumor_python = root / (os.getenv("CAMPUS_RUMOR_PYTHON") or (
         rumor_runtime if rumor_runtime.is_file() else rumor_dir / ".venv" / "Scripts" / "python.exe"
@@ -81,7 +97,7 @@ def project_services(root: Path) -> dict[str, Service]:
         Service("cas-server", root, (str(cas_python), "-B", "-m", "server.CASserver"),
                 listener=True),
         Service("campus-digest", root, (str(digest_python), "-B", "-X", "utf8", "-m", "server.CampusDigest.managed",
-                                         str(digest_dir)), listener=True, start_all=digest_python.is_file()),
+                                         *digest_args), listener=True, start_all=digest_ready),
         Service("campus-rumor", root, (str(rumor_python), "-B", "-X", "utf8", str(server / "CampusRumor" / "managed.py"),
                                        str(rumor_dir)), listener=True,
                 start_all=(rumor_dir / "app" / "main.py").is_file() and rumor_python.is_file()),

@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 ArgumentName = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]{0,31}$")]
 ArgumentValue = Annotated[str, Field(min_length=1, max_length=1500)]
 CAMPUS_ACTION_CONFIRMATION = "campus_action_confirmation"
+CAMPUS_ACTION_DETAILS = "campus_action_details_required"
 CAMPUS_TIME_ZONE = timezone(timedelta(hours=8))
 
 

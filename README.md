@@ -60,7 +60,7 @@ py -3.14 -B -m MainProcessManager init
 py -3.14 -B -m MainProcessManager run
 ```
 
-校园日报、传闻核验需要独立交付的运行包，见各自接入说明；未安装时主管理器跳过它们。Android 下载服务在加入自行构建和签名的 APK 后提供下载，详见 [Android 构建说明](client/AndroidCalendar/README.md)。
+校园日报采集和传闻核验使用独立交付的运行包。已有日报缓存时可以启动只读查询。Android 下载服务在加入自行构建和签名的 APK 后提供下载，详见 [Android 构建说明](client/AndroidCalendar/README.md)。
 
 ## 数据与凭据放在哪里
 

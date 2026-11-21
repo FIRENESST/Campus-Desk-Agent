@@ -914,10 +914,22 @@ class CampusOperationsTests(test_cloud.CloudPostgresTestCase):
         headers, _ = await self.account()
         _, conversation = await self.conversation(headers)
         _, unrelated = await self.conversation(headers, "另一实例")
-        first = "帮我预约力量训练区，2026-11-14 上午九点。"
-        followup = "一号就行。"
-        plan = {"action": "gym.start", "target": "力量训练区",
-                "arguments": {"date": "2026-11-14", "start_time": "09:00"}}
+        first = "帮我预约室内篮球场"
+        when = "明天上午九点"
+        court = "一号场就行"
+        change = "改成二号场上午十点"
+        day = (datetime.now(UTC) + timedelta(hours=8, days=1)).date().isoformat()
+        plan = {"action": "gym.start", "target": "indoor-basketball", "arguments": {}}
+        changes = {when: {"date": day, "start_time": "09:00"}, court: {"court_id": "1"},
+                   change: {"court_id": "2", "start_time": "10:00"}}
+        reviews = []
+        gateway_request = self.gateway.request
+
+        async def catalog(method, path):
+            if path == "/gym/api/venues":
+                return {"venues": [{"id": "indoor-basketball", "name": "室内篮球场", "capacity": 2,
+                                    "remaining": 2, "court_count": 2}]}
+            return await gateway_request(method, path)
 
         async def complete(messages, tools):
             self.assertEqual(tools, [])
@@ -932,12 +944,13 @@ class CampusOperationsTests(test_cloud.CloudPostgresTestCase):
                 self.assertIn("campus_today", payload)
                 if payload["query"] == first:
                     return Message("assistant", json.dumps({"campus_action": plan}, ensure_ascii=False))
-                self.assertEqual(payload["query"], followup)
+                if "campus_action_draft" not in payload:
+                    self.assertNotIn(first, [item["content"] for item in payload["history"]])
+                    return Message("assistant", '{"clarification":"请告诉我是哪项预约。"}')
                 self.assertIn(first, [item["content"] for item in payload["history"]])
-                return Message("assistant", json.dumps({"campus_action": {
-                    **plan, "arguments": {**plan["arguments"], "court_id": "1"},
-                }}, ensure_ascii=False))
+                return Message("assistant", json.dumps({"continue_campus_action": {"arguments": changes[payload["query"]]}}))
             self.assertEqual([rule["id"] for rule in payload["rules"]], ["campus.action_plan"])
+            reviews.append(json.loads(payload["answer"]))
             return action_review("pass")
 
         async def local_capabilities(registrations):
@@ -953,17 +966,30 @@ class CampusOperationsTests(test_cloud.CloudPostgresTestCase):
             await worker.process(await self.store.claim())
             return (await self.client.get(f"/v1/runs/{sent.json()['id']}", headers=headers)).json()
 
-        with patch("main_agent.cloud.runner.load_subagent_capabilities", local_capabilities):
+        with (patch("main_agent.cloud.runner.load_subagent_capabilities", local_capabilities),
+              patch.object(self.gateway, "request", catalog)):
             details = await ask(conversation, first)
+            self.assertIn("室内篮球场", details["messages"][-1]["content"])
+            self.assertIn("请补充日期、开始时间、场地号", details["messages"][-1]["content"])
+            self.assertEqual(details["steps"][0]["result"]["campus_action_draft"]["target"], "室内篮球场")
+            self.assertIn("是哪项预约", (await ask(unrelated, when))["messages"][-1]["content"])
+            incomplete = await ask(conversation, "确认预约")
+            self.assertIn("请补充日期", incomplete["messages"][-1]["content"])
+            details = await ask(conversation, when)
             self.assertIn("请补充场地号", details["messages"][-1]["content"])
-            preview = await ask(conversation, followup)
+            self.assertFalse(reviews)
+            self.assertFalse(self.gateway.writes)
+            preview = await ask(conversation, court)
             self.assertIn("预约人", preview["messages"][-1]["content"])
             self.assertIn("09:00–10:00", preview["messages"][-1]["content"])
+            amended = await ask(conversation, change)
+            self.assertIn("10:00–11:00", amended["messages"][-1]["content"])
+            self.assertEqual(len(reviews), 2)
             self.assertEqual((await ask(unrelated, "确认预约"))["result_status"], "needs_input")
             self.assertFalse(self.gateway.writes)
             completed = await ask(conversation, "确认预约")
             self.assertEqual(completed["result_status"], "completed", completed)
-            self.assertEqual(self.gateway.writes[0][2]["slot_id"], "2026-11-14_1_0900")
+            self.assertEqual(self.gateway.writes[0][2]["slot_id"], f"{day}_2_1000")
             self.assertEqual(len(self.gateway.writes), 1)
 
     async def test_gym_chat_can_book_a_slot_from_its_own_timetable(self):
@@ -1352,7 +1378,7 @@ class CampusOperationsTests(test_cloud.CloudPostgresTestCase):
             self.assertEqual([write[2]["room_id"] for write in self.gateway.writes], ["room-a101"])
             self.assertEqual(self.gateway.writes[-1][2]["starts_at"], period["starts_at"] + ":00+08:00")
             duplicate = await ask("确认预约")
-            self.assertIn("没有待确认的教室预约", duplicate["messages"][-1]["content"])
+            self.assertIn("没有待确认的预约", duplicate["messages"][-1]["content"])
             self.assertEqual(len(self.gateway.writes), 1)
 
             pending = await ask("帮我预约一个教室")

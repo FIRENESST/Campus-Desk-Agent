@@ -1,6 +1,6 @@
 import json
 
-from ...reliability.models import ToolResult
+from ...reliability.models import Evidence, ToolResult
 from ..action_plan import CampusActionPlan
 from ..contracts import AgentBackend, AgentId, AgentProfile, AgentReply, AgentTask, Status
 from ..subskills.campus_timetable import CAMPUS_TIMETABLE
@@ -45,6 +45,12 @@ class CampusServicesAgent(SpecialistAgent):
         if CAMPUS_ACTION.name not in client.names:
             return AgentReply(Status.NEEDS_CONFIGURATION, "校园服务尚未启用这项办理能力。"), None
         receipt = json.loads(await client.call_tool(CAMPUS_ACTION.name, {"plan": plan.model_dump()}))
-        reply = AgentReply(Status(receipt["status"]), receipt["message"], reason=receipt.get("reason"))
-        pending = receipt.get("pending_plan")
-        return reply, CampusActionPlan.model_validate(pending) if pending is not None else None
+        payload = receipt.get("pending_plan")
+        pending = CampusActionPlan.model_validate(payload) if payload is not None else None
+        evidence = ()
+        if pending is not None and (name := receipt.get("target_name")):
+            target = {"id": pending.target, "name": name}
+            evidence = (Evidence("campus-action-target", json.dumps(target, ensure_ascii=False), "校务服务目录",
+                                 status="success"),)
+        reply = AgentReply(Status(receipt["status"]), receipt["message"], reason=receipt.get("reason"), evidence=evidence)
+        return reply, pending
